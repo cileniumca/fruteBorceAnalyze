@@ -86,7 +86,13 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
                     loginPages.Add(page);
                 }
             }
-
+            foreach (var loginPage in loginPages)
+            {
+                if (loginPage.Url.Contains("wp-login.php"))
+                {
+                    loginPage.MainLoginPage = true;
+                }
+            }
             _logger.LogInformation("Found {Count} login pages for {Url}", loginPages.Count, url);
             return loginPages;
         }

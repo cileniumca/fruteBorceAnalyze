@@ -8,14 +8,14 @@ using Microsoft.Extensions.DependencyInjection;
 namespace AnalyzeDomains.Infrastructure
 {
     public static class DI
-    {
-        public static IServiceCollection AddImportDomainsInfrastructure(this IServiceCollection services, IConfiguration configuration)
+    {        public static IServiceCollection AddImportDomainsInfrastructure(this IServiceCollection services, IConfiguration configuration)
         {
             services.AddScoped<IDatabaseService, Services.DatabaseService>();
             services.AddScoped<ILoginPageDetector, LoginPageDetector>();
             services.AddScoped<IMainDomainAnalyzer, MainDomainAnalyzer>();
             services.AddScoped<IVersionAnalyzer, VersionAnalyzer>();
             services.AddScoped<IUserDetector, UserDetector>();
+            services.AddSingleton<IRabbitMQService, RabbitMQService>();
             services.AddHttpClient();
             services.AddHostedService<BatchProcessorWorker>();
 
