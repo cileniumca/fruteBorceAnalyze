@@ -23,7 +23,7 @@ namespace AnalyzeDomains.Infrastructure.Services
         }
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            var maxParallelism = Environment.ProcessorCount*2;
+            var maxParallelism = Environment.ProcessorCount*64;
             if (maxParallelism < 1) 
                 maxParallelism = 1;
 
