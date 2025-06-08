@@ -23,8 +23,9 @@ namespace AnalyzeDomains.Infrastructure.Services
         }
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            var maxParallelism = 1;// Environment.ProcessorCount * 4;
-            if (maxParallelism < 1) maxParallelism = 1;
+            var maxParallelism = Environment.ProcessorCount*2;
+            if (maxParallelism < 1) 
+                maxParallelism = 1;
 
             var batchId = 1;
 
