@@ -53,9 +53,20 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
                     var loginUsers = await EnumerateViaLoginRedirect(url, maxUsers - users.Count, cancellationToken);
                     users.AddRange(loginUsers);
                 }
-
+                var tempUsers = new List<WordPressUser>();
+                foreach (var user in users)
+                {
+                    if( Int32.TryParse(user.Username, out _))
+                    {
+                        continue;
+                    }
+                    else
+                    {
+                        tempUsers.Add(user);
+                    }
+                }
                 // Remove duplicates and return
-                var uniqueUsers = users
+                var uniqueUsers = tempUsers
                     .GroupBy(u => u.Username.ToLower())
                     .Select(g => g.OrderByDescending(u => u.Confidence).First())
                     .Take(maxUsers)
