@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Npgsql;
+using System.Threading;
 
 namespace AnalyzeDomains.Infrastructure.Services
 {
@@ -17,6 +18,30 @@ namespace AnalyzeDomains.Infrastructure.Services
             _configuration = configuration;
             _logger = logger;
             _dataSource = new NpgsqlDataSourceBuilder(_configuration.GetConnectionString("DefaultConnection")).Build();
+        }
+        public async Task<List<CompletedEvent>> ReadUserInfoForEvents(CancellationToken cancellationToken)
+        {
+            var results = new List<CompletedEvent>();
+            await using (var connection = await _dataSource.OpenConnectionAsync(cancellationToken))
+            {
+                await using var cmd = new NpgsqlCommand(@"
+                    SELECT cs.id, cs.domain, csu.login, cs.wp_url
+                    FROM public.checked_sites cs
+                    JOIN public.cheked_sites_users csu ON cs.id = csu.checked_site_id", connection);
+                await using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    var completedEvent = new CompletedEvent
+                    {
+                        SiteId = reader.IsDBNull(0) ? 0 : reader.GetInt32(0),
+                        FullUrl = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                        Login = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                        LoginPage = reader.IsDBNull(3) ? string.Empty : reader.GetString(3)
+                    };
+                    results.Add(completedEvent);
+                }
+            }
+            return results;
         }
 
         public async Task<List<SiteInfo>> ReadAllDomainsAsync(int batchSize = 25000, CancellationToken cancellationToken = default)
