@@ -1,5 +1,6 @@
 ﻿using AnalyzeDomains.Domain.Enums;
 using AnalyzeDomains.Domain.Interfaces.Analyzers;
+using AnalyzeDomains.Domain.Interfaces.Services;
 using AnalyzeDomains.Domain.Models;
 using Microsoft.Extensions.Logging;
 using System.Text.RegularExpressions;
@@ -8,12 +9,12 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
 {
     public class VersionAnalyzer : IVersionAnalyzer
     {
-        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly ISocksService _socksService;
         private readonly ILogger<VersionAnalyzer> _logger;
         private readonly VersionDetectionSettings _settings;
-        public VersionAnalyzer(IHttpClientFactory httpClientFactory, ILogger<VersionAnalyzer> logger)
+        public VersionAnalyzer(ISocksService socksService, ILogger<VersionAnalyzer> logger)
         {
-            _httpClientFactory = httpClientFactory;
+            _socksService = socksService;
             _logger = logger;
             _settings = new VersionDetectionSettings();
         }
@@ -142,8 +143,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
         {
             try
             {
-                var client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(60);
+                var client = await _socksService.GetHttpWithSocksConnection();
 
                 var response = await client.GetAsync(url, cancellationToken);
                 if (!response.IsSuccessStatusCode)
@@ -178,8 +178,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
         {
             try
             {
-                var client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(60);
+                var client = await _socksService.GetHttpWithSocksConnection();
                 var readmeUrl = $"{url.TrimEnd('/')}/readme.html";
                 var response = await client.GetAsync(readmeUrl, cancellationToken);
                 if (!response.IsSuccessStatusCode)
@@ -215,8 +214,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
 
             try
             {
-                var client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(60);
+                var client = await _socksService.GetHttpWithSocksConnection();
                 var response = await client.GetAsync(url, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                     return versions;
@@ -263,8 +261,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
         {
             try
             {
-                var client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(60);
+                var client = await _socksService.GetHttpWithSocksConnection();
                 var versionUrl = $"{url.TrimEnd('/')}/wp-includes/version.php";
                 var response = await client.GetAsync(versionUrl, cancellationToken);
                 if (!response.IsSuccessStatusCode)
@@ -298,8 +295,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
         {
             var versions = new List<WordPressVersion>();
             var commonThemes = new[] { "twentyten", "twentyeleven", "twentytwelve", "twentythirteen", "twentyfourteen", "twentyfifteen", "twentysixteen", "twentyseventeen", "twentynineteen", "twentytwenty", "twentytwentyone", "twentytwentytwo", "twentytwentythree", "twentytwentyfour", "twentytwentyfive" };
-            var client = _httpClientFactory.CreateClient();
-            client.Timeout = TimeSpan.FromSeconds(60);
+            var client = await _socksService.GetHttpWithSocksConnection();
             foreach (var theme in commonThemes)
             {
                 try

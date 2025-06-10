@@ -1,5 +1,6 @@
 ﻿using AnalyzeDomains.Domain.Enums;
 using AnalyzeDomains.Domain.Interfaces.Analyzers;
+using AnalyzeDomains.Domain.Interfaces.Services;
 using AnalyzeDomains.Domain.Models;
 using Microsoft.Extensions.Logging;
 using System.Net.Http;
@@ -9,7 +10,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
 {
     public class LoginPageDetector : ILoginPageDetector
     {
-        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly ISocksService _socksService;
         private readonly ILogger<LoginPageDetector> _logger;
         private readonly List<string> _loginPaths = new()
     {
@@ -46,9 +47,9 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
         "admin panel",
         "administration"
     };
-        public LoginPageDetector(IHttpClientFactory httpClientFactory, ILogger<LoginPageDetector> logger)
+        public LoginPageDetector(ISocksService socksService, ILogger<LoginPageDetector> logger)
         {
-            _httpClientFactory = httpClientFactory;
+            _socksService = socksService;
             _logger = logger;
         }
 
@@ -101,8 +102,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
             try
             {
                 var loginUrl = $"{baseUrl.TrimEnd('/')}{path}";
-                var client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(45);
+                var client = await _socksService.GetHttpWithSocksConnection();
                 var response = await client.GetAsync(loginUrl, cancellationToken);
 
                 if (response.IsSuccessStatusCode)
@@ -173,8 +173,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
                     redirectUrl = new Uri(baseUri, redirectUrl).ToString();
                 }
 
-                var client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(45);
+                var client = await _socksService.GetHttpWithSocksConnection();
                 var response = await client.GetAsync(redirectUrl, cancellationToken);
 
                 if (response.IsSuccessStatusCode)
@@ -297,8 +296,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
 
             try
             {
-                var client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(45);
+                var client = await _socksService.GetHttpWithSocksConnection();
                 var response = await client.GetAsync(url, cancellationToken);
 
                 if (response.IsSuccessStatusCode)
@@ -353,8 +351,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
             try
             {
                 var robotsUrl = $"{url.TrimEnd('/')}/robots.txt";
-                var client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(45);
+                var client = await _socksService.GetHttpWithSocksConnection();
                 var response = await client.GetAsync(robotsUrl, cancellationToken);
 
                 if (response.IsSuccessStatusCode)

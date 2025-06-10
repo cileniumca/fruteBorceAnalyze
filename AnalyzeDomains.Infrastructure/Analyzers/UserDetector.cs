@@ -1,5 +1,6 @@
 ﻿using AnalyzeDomains.Domain.Enums;
 using AnalyzeDomains.Domain.Interfaces.Analyzers;
+using AnalyzeDomains.Domain.Interfaces.Services;
 using AnalyzeDomains.Domain.Models;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
@@ -9,14 +10,14 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
 {
     public class UserDetector : IUserDetector
     {
-        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly ISocksService _socksService;
         private readonly ILogger<UserDetector> _logger;
         private readonly UserEnumerationSettings _settings;
-        public UserDetector(IHttpClientFactory httpClientFactory, ILogger<UserDetector> logger)
+        public UserDetector(ISocksService socksService, ILogger<UserDetector> logger)
         {
             _logger = logger;
             _settings = new UserEnumerationSettings();
-            _httpClientFactory = httpClientFactory;
+            _socksService = socksService;
         }
         public async Task<List<WordPressUser>> EnumerateUsersAsync(string url, DetectionMode mode, int maxUsers, CancellationToken cancellationToken = default)
         {
@@ -90,8 +91,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
             {
                 var apiUrl = $"{url.TrimEnd('/')}/wp-json/wp/v2/users";
                 _logger.LogDebug("Attempting user enumeration via WP-JSON API: {ApiUrl}", apiUrl);
-                var client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(60);
+                var client = await _socksService.GetHttpWithSocksConnection();
 
                 var response = await client.GetAsync(apiUrl, cancellationToken);
                 if (!response.IsSuccessStatusCode)
@@ -142,8 +142,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
             try
             {
                 _logger.LogDebug("Attempting user enumeration via author archives");
-                var client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(60);
+                var client = await _socksService.GetHttpWithSocksConnection();
                 for (int userId = 1; userId <= Math.Min(maxUsers * 2, 100); userId++)
                 {
                     if (users.Count >= maxUsers)
@@ -190,8 +189,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
         private async Task<List<WordPressUser>> EnumerateViaXmlRpc(string url, int maxUsers, CancellationToken cancellationToken)
         {
             var users = new List<WordPressUser>();
-            var client = _httpClientFactory.CreateClient();
-            client.Timeout = TimeSpan.FromSeconds(60);
+            var client = await _socksService.GetHttpWithSocksConnection();
             try
             {
                 var xmlRpcUrl = $"{url.TrimEnd('/')}/xmlrpc.php";
@@ -238,8 +236,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
         private async Task<List<WordPressUser>> EnumerateViaLoginRedirect(string url, int maxUsers, CancellationToken cancellationToken)
         {
             var users = new List<WordPressUser>();
-            var client = _httpClientFactory.CreateClient();
-            client.Timeout = TimeSpan.FromSeconds(60);
+            var client = await _socksService.GetHttpWithSocksConnection();
             try
             {
                 var loginUrl = $"{url.TrimEnd('/')}/wp-login.php";
@@ -319,8 +316,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
 
         private async Task<bool> CheckUsernameViaXmlRpc(string xmlRpcUrl, string username, CancellationToken cancellationToken)
         {
-            var client = _httpClientFactory.CreateClient();
-            client.Timeout = TimeSpan.FromSeconds(60);
+            var client = await _socksService.GetHttpWithSocksConnection();
             try
             {
                 var xmlRequest = $@"<?xml version=""1.0""?>

@@ -16,6 +16,7 @@ namespace AnalyzeDomains.Infrastructure
             services.AddScoped<IVersionAnalyzer, VersionAnalyzer>();
             services.AddScoped<IUserDetector, UserDetector>();
             services.AddSingleton<IRabbitMQService, RabbitMQService>();
+            services.AddScoped<ISocksService, SocksService>();
             services.AddHttpClient();
             services.AddHostedService<BatchProcessorWorker>();
 

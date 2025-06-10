@@ -1,16 +1,17 @@
 ﻿using AnalyzeDomains.Domain.Interfaces.Analyzers;
+using AnalyzeDomains.Domain.Interfaces.Services;
 using Microsoft.Extensions.Logging;
 
 namespace AnalyzeDomains.Infrastructure.Analyzers
 {
     public class MainDomainAnalyzer : IMainDomainAnalyzer
     {
-        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly ISocksService _socksService;
         private readonly ILogger<MainDomainAnalyzer> _logger;
 
-        public MainDomainAnalyzer(IHttpClientFactory httpClientFactory, ILogger<MainDomainAnalyzer> logger)
+        public MainDomainAnalyzer(ISocksService socksService, ILogger<MainDomainAnalyzer> logger)
         {
-            _httpClientFactory = httpClientFactory;
+            _socksService = socksService;
             _logger = logger;
         }
 
@@ -21,8 +22,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
             try
             {
                 using var handler = new HttpClientHandler { AllowAutoRedirect = false };
-                var client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(30);
+                var client = await _socksService.GetHttpWithSocksConnection();
 
                 foreach (var scheme in new[] { "https", "http" })
                 {
