@@ -19,7 +19,6 @@ namespace AnalyzeDomains.Infrastructure.Services
             HttpClient client;
             var now = DateTime.UtcNow;
 
-            // If we have no clients, or the first client is expired (older than 1 minute)
             if (_httpClientByDate.Count == 0 ||
                 now > _httpClientByDate.Keys.OrderBy(k => k).FirstOrDefault().AddMinutes(1))
             {
@@ -40,19 +39,16 @@ namespace AnalyzeDomains.Infrastructure.Services
                     }
                 };
 
-                // Create the client directly instead of using the factory with multiple parameters
                 client = new HttpClient(httpClientHandler)
                 {
                     Timeout = TimeSpan.FromMinutes(1)
                 };
 
-                // Clear old clients and add the new one
                 _httpClientByDate.Clear();
                 _httpClientByDate.TryAdd(now, client);
             }
             else
             {
-                // Get the most recent client
                 client = _httpClientByDate.OrderByDescending(x => x.Key).FirstOrDefault().Value;
             }
 
