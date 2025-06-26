@@ -4,7 +4,6 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Npgsql;
-using System.Threading;
 
 namespace AnalyzeDomains.Infrastructure.Services
 {

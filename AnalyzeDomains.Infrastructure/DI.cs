@@ -8,7 +8,8 @@ using Microsoft.Extensions.DependencyInjection;
 namespace AnalyzeDomains.Infrastructure
 {
     public static class DI
-    {        public static IServiceCollection AddImportDomainsInfrastructure(this IServiceCollection services, IConfiguration configuration)
+    {
+        public static IServiceCollection AddImportDomainsInfrastructure(this IServiceCollection services, IConfiguration configuration)
         {
             services.AddScoped<IDatabaseService, Services.DatabaseService>();
             services.AddScoped<ILoginPageDetector, LoginPageDetector>();

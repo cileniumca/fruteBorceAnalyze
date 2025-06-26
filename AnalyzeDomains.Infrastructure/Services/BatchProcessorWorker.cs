@@ -23,8 +23,8 @@ namespace AnalyzeDomains.Infrastructure.Services
         }
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            var maxParallelism = Environment.ProcessorCount*1280;
-            if (maxParallelism < 1) 
+            var maxParallelism = Environment.ProcessorCount * 1280;
+            if (maxParallelism < 1)
                 maxParallelism = 1;
 
             var batchId = 1;
@@ -89,20 +89,17 @@ namespace AnalyzeDomains.Infrastructure.Services
                                         users,
                                         fullDomain,
                                         stoppingToken
-                                    );
-
-
-
+                                    ); 
                                     foreach (var user in users)
                                     {
                                         var batchEvent = new CompletedEvent
                                         {
                                             Login = user.Username,
                                             FullUrl = fullDomain,
-                                            LoginPage = loginPage.Where(x => x.MainLoginPage == true).Select(xx => xx.Url).FirstOrDefault(),
+                                            LoginPage = loginPage.Where(x => x.MainLoginPage == true).Select(xx => xx.Url).FirstOrDefault() ?? string.Empty,
                                             SiteId = domain.SiteId
                                         };
-                                        await _rabbitMQService.PublishBatchCompletedEventAsync(batchEvent, stoppingToken);
+                                        await _rabbitMQService.PublishBatchCompletedEventAsync(batchEvent, users, stoppingToken);
 
                                     }
 
@@ -162,7 +159,7 @@ namespace AnalyzeDomains.Infrastructure.Services
 //        }
 //        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 //        {
-//            var maxParallelism = Environment.ProcessorCount * 1280;
+//            var maxParallelism = Environment.ProcessorCount * 50;
 //            if (maxParallelism < 1)
 //                maxParallelism = 1;
 
@@ -186,7 +183,7 @@ namespace AnalyzeDomains.Infrastructure.Services
 //                    var mainDomainAnalyzer = scope.ServiceProvider.GetRequiredService<IMainDomainAnalyzer>();
 
 //                    var getUserInfoForQueue = await dataBaseService.ReadUserInfoForEvents(stoppingToken);
-
+//                    getUserInfoForQueue = getUserInfoForQueue.OrderBy(x => x.SiteId).ToList();
 //                    // Split events into chunks
 //                    const int chunkSize = 128;
 //                    var eventChunks = getUserInfoForQueue
@@ -195,7 +192,7 @@ namespace AnalyzeDomains.Infrastructure.Services
 //                        .Select(g => g.Select(x => x.evt).ToList())
 //                        .ToList();
 
-//                    var semaphore = new SemaphoreSlim(128);
+//                    var semaphore = new SemaphoreSlim(50);
 //                    var tasks = new List<Task>();
 
 //                    foreach (var chunk in eventChunks)

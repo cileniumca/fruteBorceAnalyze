@@ -3,7 +3,6 @@ using AnalyzeDomains.Domain.Interfaces.Analyzers;
 using AnalyzeDomains.Domain.Interfaces.Services;
 using AnalyzeDomains.Domain.Models;
 using Microsoft.Extensions.Logging;
-using System.Net.Http;
 using System.Text.RegularExpressions;
 
 namespace AnalyzeDomains.Infrastructure.Analyzers

@@ -57,7 +57,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
                 var tempUsers = new List<WordPressUser>();
                 foreach (var user in users)
                 {
-                    if( Int32.TryParse(user.Username, out _))
+                    if (Int32.TryParse(user.Username, out _))
                     {
                         continue;
                     }
