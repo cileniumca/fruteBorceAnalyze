@@ -23,7 +23,7 @@ namespace AnalyzeDomains.Infrastructure.Services
         }
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            var maxParallelism = Environment.ProcessorCount * 640;
+            var maxParallelism = Environment.ProcessorCount * Environment.ProcessorCount;
             if (maxParallelism < 1)
                 maxParallelism = 1;
 
@@ -50,7 +50,7 @@ namespace AnalyzeDomains.Infrastructure.Services
                         var semaphore = new SemaphoreSlim(maxParallelism);
                         var tasks = new List<Task>();
 
-                        foreach (var domain in domainsToValidate.OrderBy(x => x.Domain))
+                        foreach (var domain in domainsToValidate)
                         {
                             await semaphore.WaitAsync(stoppingToken);
 
