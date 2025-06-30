@@ -19,7 +19,7 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _batchCompletedQueueName = _configuration.GetValue<string>("RabbitMQ:BatchCompletedQueueName") ?? "batch-processing-completed";
-        _completedEventsQueueName = _configuration.GetValue<string>("RabbitMQ:CompletedEventsQueueName") ?? "completed-events";
+        _completedEventsQueueName = _configuration.GetValue<string>("RabbitMQ:CompletedEventsQueueName") ?? "forcequeue";
         _connection = CreateConnection();
 
         _logger.LogInformation("RabbitMQ service initialized");
