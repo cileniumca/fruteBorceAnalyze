@@ -113,8 +113,10 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
                             DisplayName = userJson.TryGetProperty("name", out var nameProp) ? nameProp.GetString() : null,
                             Confidence = ConfidenceLevel.Certain,
                             DetectionMethod = "WP-JSON API",
-                            Metadata = { ["api_endpoint"] = apiUrl }
-                        }; if (userJson.TryGetProperty("link", out var linkProp))
+                            Metadata = { ["api_endpoint"] = apiUrl },
+                            UserType = EventType.WpLoginCompleted
+                        };
+                        if (userJson.TryGetProperty("link", out var linkProp))
                         {
                             user.Metadata["profile_link"] = linkProp.GetString() ?? "";
                         }
@@ -166,7 +168,8 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
                                 Username = username,
                                 Confidence = ConfidenceLevel.High,
                                 DetectionMethod = "Author Archive",
-                                Metadata = { ["author_url"] = authorUrl }
+                                Metadata = { ["author_url"] = authorUrl },
+                                UserType = EventType.WpLoginCompleted
                             };
 
                             users.Add(user);
@@ -216,7 +219,8 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
                             Username = username,
                             Confidence = ConfidenceLevel.Medium,
                             DetectionMethod = "XML-RPC",
-                            Metadata = { ["xmlrpc_url"] = xmlRpcUrl }
+                            Metadata = { ["xmlrpc_url"] = xmlRpcUrl },
+                            UserType = EventType.XmlRpcCompleted
                         });
 
                         _logger.LogDebug("Found user via XML-RPC: {Username}", username);
@@ -265,7 +269,8 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
                             Username = username,
                             Confidence = ConfidenceLevel.High,
                             DetectionMethod = "Login Error Analysis",
-                            Metadata = { ["login_url"] = loginUrl }
+                            Metadata = { ["login_url"] = loginUrl },
+                            UserType = EventType.WpLoginCompleted
                         });
 
                         _logger.LogDebug("Found user via login redirect: {Username}", username);

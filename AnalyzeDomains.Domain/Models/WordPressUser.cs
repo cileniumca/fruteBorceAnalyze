@@ -8,6 +8,7 @@ namespace AnalyzeDomains.Domain.Models
         public string Username { get; set; } = string.Empty;
         public string? DisplayName { get; set; }
         public string? Email { get; set; }
+        public EventType UserType { get; set; }
         public List<string> Roles { get; set; } = new();
         public ConfidenceLevel Confidence { get; set; }
         public string? DetectionMethod { get; set; }

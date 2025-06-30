@@ -165,8 +165,8 @@ namespace AnalyzeDomains.Infrastructure.Services
 
                 const string insertUserCommand = @"
             INSERT INTO public.cheked_sites_users(
-                login, password, checked_site_id)
-            VALUES (@login, @password, @checked_site_id);";
+                login, password, checked_site_id, user_type)
+            VALUES (@login, @password, @checked_site_id, @user_type);";
 
                 foreach (var user in wordPressUser)
                 {
@@ -175,6 +175,7 @@ namespace AnalyzeDomains.Infrastructure.Services
                     {
                 new NpgsqlParameter("@login", user.Username),
                 new NpgsqlParameter("@password", string.Empty),
+                 new NpgsqlParameter("@user_type", user.UserType),
                 new NpgsqlParameter("@checked_site_id", siteId)
             });
                     await userCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);

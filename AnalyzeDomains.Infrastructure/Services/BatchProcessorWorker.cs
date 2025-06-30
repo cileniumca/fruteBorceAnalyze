@@ -67,11 +67,11 @@ namespace AnalyzeDomains.Infrastructure.Services
                                     }
 
                                     var loginPage = await loginPageDetector.DetectLoginPagesAsync(fullDomain, stoppingToken);
-                                    if (loginPage.Count == 0)
-                                    {
-                                        publicSitesToDeactivate.Add(domain.SiteId);
-                                        return;
-                                    }
+                                    //if (loginPage.Count == 0)
+                                    //{
+                                    //    publicSitesToDeactivate.Add(domain.SiteId);
+                                    //    return;
+                                    //}
 
                                     var versionInfo = await versionAnalyzer.DetectVersionAsync(fullDomain, DetectionMode.Mixed, ConfidenceLevel.Medium, stoppingToken);
                                     var users = await userDetector.EnumerateUsersAsync(fullDomain, DetectionMode.Mixed, 20, stoppingToken);
