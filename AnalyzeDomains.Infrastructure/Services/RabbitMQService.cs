@@ -51,12 +51,32 @@ public class RabbitMQService : IRabbitMQService, IDisposable
     {
         // Determine event type based on XML-RPC support
         EventType eventType = DetermineEventType(users);
+        if (eventType is EventType.XmlRpcCompleted)
+        {
+            BaseCompletedEvent completedEvent = CreateCompletedEvent(eventData, eventType);
 
-        BaseCompletedEvent completedEvent = CreateCompletedEvent(eventData, eventType);
+            await PublishEventAsync(completedEvent, _completedEventsQueueName, cancellationToken);
+            _logger.LogInformation("Published {EventType} event for site {SiteId}",
+                completedEvent.EventType, eventData.SiteId);
 
-        await PublishEventAsync(completedEvent, _completedEventsQueueName, cancellationToken);
-        _logger.LogInformation("Published {EventType} event for site {SiteId}",
-            completedEvent.EventType, eventData.SiteId);
+            BaseCompletedEvent completedEventWP = CreateCompletedEvent(eventData, EventType.WpLoginCompleted);
+
+            await PublishEventAsync(completedEventWP, _completedEventsQueueName, cancellationToken);
+            _logger.LogInformation("Published {EventType} event for site {SiteId}",
+                completedEventWP.EventType, eventData.SiteId);
+
+        }
+        else if (eventType is EventType.WpLoginCompleted)
+        {
+            BaseCompletedEvent completedEvent = CreateCompletedEvent(eventData, eventType);
+            await PublishEventAsync(completedEvent, _completedEventsQueueName, cancellationToken);
+            _logger.LogInformation("Published {EventType} event for site {SiteId}",
+                completedEvent.EventType, eventData.SiteId);
+        }
+        else
+        {
+            _logger.LogWarning("Unsupported event type detected for site {SiteId}", eventData.SiteId);
+        } 
     }
 
     private EventType DetermineEventType(List<WordPressUser> users)
@@ -65,6 +85,8 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         bool supportsXmlRpc = users.Any(user => user.DetectionMethod == "XML-RPC");
         return supportsXmlRpc ? EventType.XmlRpcCompleted : EventType.WpLoginCompleted;
     }
+        
+    
     private BaseCompletedEvent CreateCompletedEvent(CompletedEvent eventData, EventType eventType)
     {
         return eventType switch
