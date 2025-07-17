@@ -46,7 +46,7 @@ namespace AnalyzeDomains.Infrastructure.Services
                     var mainDomainAnalyzer = scope.ServiceProvider.GetRequiredService<IMainDomainAnalyzer>();
 
                     // Consume events from the queue instead of reading from database
-                    var domainsToValidate = await _rabbitMQService.ConsumeAnalyzeEventsAsync(1, stoppingToken);
+                    var domainsToValidate = await _rabbitMQService.ConsumeAnalyzeEventsAsync(1000, stoppingToken);
                     domainsList = domainsToValidate.ToList();
 
                     if (domainsList.Count > 0)
