@@ -434,12 +434,12 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                         {
                             consumedEvents.Add(siteInfo);
                             _channel.BasicAck(result.DeliveryTag, false); // Acknowledge successful processing
-                            _logger.LogDebug("Successfully consumed and processed message {DeliveryTag} for site {SiteId}", 
+                            _logger.LogInformation("Successfully consumed and processed message {DeliveryTag} for site {SiteId}", 
                                 result.DeliveryTag, siteInfo.SiteId);
                         }
                         else
                         {
-                            _logger.LogWarning("Received invalid SiteInfo message. Rejecting message {DeliveryTag}", result.DeliveryTag);
+                            _logger.LogInformation("Received invalid SiteInfo message. Rejecting message {DeliveryTag}", result.DeliveryTag);
                             _channel.BasicReject(result.DeliveryTag, false); // Reject and don't requeue
                         }
                     }
