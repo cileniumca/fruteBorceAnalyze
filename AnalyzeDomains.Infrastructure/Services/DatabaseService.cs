@@ -103,7 +103,7 @@ namespace AnalyzeDomains.Infrastructure.Services
             await using var conn = new NpgsqlConnection(_configuration.GetConnectionString("DefaultConnection"));
             await conn.OpenAsync();
 
-            string sql = "SELECT id, domain FROM public.sites WHERE id BETWEEN @start AND @end";
+            string sql = "SELECT id, domain FROM public.sites WHERE id BETWEEN @start AND @end and was_validated = false";
 
             await using var cmd = new NpgsqlCommand(sql, conn);
             cmd.Parameters.AddWithValue("start", startId);
@@ -120,6 +120,26 @@ namespace AnalyzeDomains.Infrastructure.Services
             }
 
             return results;
+        }
+        public async Task SiteWasValidated(SiteInfo siteInfo, CancellationToken cancellationToken)
+        {
+            await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                string command = $@"UPDATE public.sites
+	SET was_validated=true
+	WHERE id = {siteInfo.SiteId};";
+                await using var cmd = new NpgsqlCommand(command, connection, transaction);
+                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating site validation status for site ID {SiteId}", siteInfo.SiteId);
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                throw;
+            }
         }
 
         public async Task AddSiteWithUsers(

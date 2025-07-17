@@ -7,5 +7,6 @@ namespace AnalyzeDomains.Domain.Interfaces.Services
         Task AddSiteWithUsers(SiteInfo siteInfo, List<WordPressLoginPage> wordPressLoginPages, WordPressVersion version, List<WordPressUser> wordPressUser, string fullDomain, CancellationToken cancellationToken);
         Task<List<SiteInfo>> ReadAllDomainsAsync(int batchSize = 25000, CancellationToken cancellationToken = default);
         Task<List<CompletedEvent>> ReadUserInfoForEvents(CancellationToken cancellationToken);
+        Task SiteWasValidated(SiteInfo siteInfo, CancellationToken cancellationToken);
     }
 }
