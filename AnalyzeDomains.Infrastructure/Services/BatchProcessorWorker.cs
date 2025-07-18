@@ -23,7 +23,7 @@ namespace AnalyzeDomains.Infrastructure.Services
         }
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            var maxParallelism = Environment.ProcessorCount * Environment.ProcessorCount;
+            var maxParallelism = 64;
             if (maxParallelism < 1)
                 maxParallelism = 1;
 
@@ -46,7 +46,7 @@ namespace AnalyzeDomains.Infrastructure.Services
                     var mainDomainAnalyzer = scope.ServiceProvider.GetRequiredService<IMainDomainAnalyzer>();
 
                     // Consume events from the queue instead of reading from database
-                    var domainsToValidate = await _rabbitMQService.ConsumeAnalyzeEventsAsync(Environment.ProcessorCount * Environment.ProcessorCount, stoppingToken);
+                    var domainsToValidate = await _rabbitMQService.ConsumeAnalyzeEventsAsync(64, stoppingToken);
                     domainsList = domainsToValidate.ToList();
 
                     if (domainsList.Count > 0)
