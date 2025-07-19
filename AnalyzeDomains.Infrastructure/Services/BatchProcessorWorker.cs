@@ -56,79 +56,77 @@ namespace AnalyzeDomains.Infrastructure.Services
 
                         foreach (var domain in domainsList)
                         {
-                            await semaphore.WaitAsync(stoppingToken);
-
-                            tasks.Add(Task.Run(async () =>
-                            {
-                                var isSuccess = false;
-                                try
-                                {
-                                    var fullDomain = await mainDomainAnalyzer.MainPageAnalyzeAsync(domain.Domain, stoppingToken);
-                                    if (string.IsNullOrEmpty(fullDomain))
-                                    {
-                                        publicSitesToDeactivate.Add(domain.SiteId);
-                                        return;
-                                    }
-
-                                    var loginPage = await loginPageDetector.DetectLoginPagesAsync(fullDomain, stoppingToken);
-                                    //if (loginPage.Count == 0)
-                                    //{
-                                    //    publicSitesToDeactivate.Add(domain.SiteId);
-                                    //    return;
-                                    //}
-
-                                    var versionInfo = await versionAnalyzer.DetectVersionAsync(fullDomain, DetectionMode.Mixed, ConfidenceLevel.Medium, stoppingToken);
-                                    var users = await userDetector.EnumerateUsersAsync(fullDomain, DetectionMode.Mixed, 20, stoppingToken);
-
-                                    if (users.Count == 0)
-                                    {
-                                        publicSitesToDeactivate.Add(domain.SiteId);
-                                        return;
-                                    }                                    // Try to add site and users to database, but continue with event publishing regardless
+                            tasks.Add(Task.Run(async () => {
+                                await semaphore.WaitAsync(stoppingToken); // Wait inside task
+                                try {
+                                    var isSuccess = false;
                                     try
                                     {
-                                        await dataBaseService.AddSiteWithUsers(
-                                            domain,
-                                            loginPage,
-                                            versionInfo ?? new Domain.Models.WordPressVersion(),
-                                            users,
-                                            fullDomain,
-                                            stoppingToken
-                                        );
-                                    }
-                                    catch (Exception dbEx)
-                                    {
-                                        // Log database error but continue with event publishing
-                                        // This could happen if site/users already exist in database
-                                        Console.WriteLine($"Database insertion failed for domain {fullDomain}: {dbEx.Message}");
-                                    }
+                                        var fullDomain = await mainDomainAnalyzer.MainPageAnalyzeAsync(domain.Domain, stoppingToken);
+                                        if (string.IsNullOrEmpty(fullDomain))
+                                        {
+                                            publicSitesToDeactivate.Add(domain.SiteId);
+                                            return;
+                                        }
 
-                                    // Publish events regardless of database operation success
-                                    foreach (var user in users)
-                                    {
-                                        var batchEvent = new CompletedEvent
+                                        var loginPage = await loginPageDetector.DetectLoginPagesAsync(fullDomain, stoppingToken);
+                                        //if (loginPage.Count == 0)
+                                        //{
+                                        //    publicSitesToDeactivate.Add(domain.SiteId);
+                                        //    return;
+                                        //}
+
+                                        var versionInfo = await versionAnalyzer.DetectVersionAsync(fullDomain, DetectionMode.Mixed, ConfidenceLevel.Medium, stoppingToken);
+                                        var users = await userDetector.EnumerateUsersAsync(fullDomain, DetectionMode.Mixed, 20, stoppingToken);
+
+                                        if (users.Count == 0)
+                                        {
+                                            publicSitesToDeactivate.Add(domain.SiteId);
+                                            return;
+                                        }                                    // Try to add site and users to database, but continue with event publishing regardless
+                                        try
+                                        {
+                                            await dataBaseService.AddSiteWithUsers(
+                                                domain,
+                                                loginPage,
+                                                versionInfo ?? new Domain.Models.WordPressVersion(),
+                                                users,
+                                                fullDomain,
+                                                stoppingToken
+                                            );
+                                        }
+                                        catch (Exception dbEx)
+                                        {
+                                            // Log database error but continue with event publishing
+                                            // This could happen if site/users already exist in database
+                                            Console.WriteLine($"Database insertion failed for domain {fullDomain}: {dbEx.Message}");
+                                        }                                        // Publish events regardless of database operation success
+                                        var mainLoginPageUrl = loginPage.Where(x => x.MainLoginPage == true).Select(xx => xx.Url).FirstOrDefault() ?? string.Empty;
+                                        var batchEvents = users.Select(user => new CompletedEvent
                                         {
                                             Login = user.Username,
                                             FullUrl = fullDomain,
-                                            LoginPage = loginPage.Where(x => x.MainLoginPage == true).Select(xx => xx.Url).FirstOrDefault() ?? string.Empty,
+                                            LoginPage = mainLoginPageUrl,
                                             SiteId = domain.SiteId
-                                        };
-                                        await _rabbitMQService.PublishBatchCompletedEventAsync(batchEvent, users, stoppingToken);
+                                        }).ToList();
+                                        
+                                        await _rabbitMQService.PublishBatchCompletedEventsAsync(batchEvents, users, stoppingToken);
+
+                                        isSuccess = true;
                                     }
-
-                                    isSuccess = true;
+                                    catch (Exception)
+                                    {
+                                        // Log error if needed
+                                    }
+                                    finally
+                                    {
+                                        if (isSuccess)
+                                            Interlocked.Increment(ref successfulAnalyses);
+                                        else
+                                            Interlocked.Increment(ref failedAnalyses);
+                                    }
                                 }
-                                catch (Exception)
-                                {
-                                    // Log error if needed
-                                }
-                                finally
-                                {
-                                    if (isSuccess)
-                                        Interlocked.Increment(ref successfulAnalyses);
-                                    else
-                                        Interlocked.Increment(ref failedAnalyses);
-
+                                finally {
                                     semaphore.Release();
                                 }
                             }, stoppingToken));

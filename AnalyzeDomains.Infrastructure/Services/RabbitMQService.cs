@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using RabbitMQ.Client;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Threading.Channels;
 
@@ -25,6 +26,11 @@ public class RabbitMQService : IRabbitMQService, IDisposable
 
     private  IConnection _connectionNew;
     private IModel _channel;
+
+    // Connection pooling and channel management optimization
+    private readonly SemaphoreSlim _channelSemaphore = new SemaphoreSlim(10, 10); // Limit concurrent channel usage
+    private readonly ConcurrentQueue<IModel> _channelPool = new();
+    private readonly object _channelPoolLock = new();
 
     public RabbitMQService(IConfiguration configuration, ILogger<RabbitMQService> logger)
     {
@@ -196,6 +202,71 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         }
     }
 
+    public async Task PublishBatchCompletedEventsAsync(List<CompletedEvent> events, List<WordPressUser> users, CancellationToken cancellationToken = default)
+    {
+        if (events == null || events.Count == 0) return;
+
+        // Determine event type based on XML-RPC support (same for all events from same domain)
+        EventType eventType = DetermineEventType(users);
+        
+        // Create all events to publish
+        var eventsToPublish = new List<BaseCompletedEvent>();
+        
+        foreach (var eventData in events)
+        {
+            if (eventType == EventType.XmlRpcCompleted)
+            {
+                // Add both XML-RPC and WP Login events for XML-RPC capable sites
+                eventsToPublish.Add(CreateCompletedEvent(eventData, EventType.XmlRpcCompleted));
+                eventsToPublish.Add(CreateCompletedEvent(eventData, EventType.WpLoginCompleted));
+            }
+            else if (eventType == EventType.WpLoginCompleted)
+            {
+                eventsToPublish.Add(CreateCompletedEvent(eventData, EventType.WpLoginCompleted));
+            }
+        }
+
+        if (eventsToPublish.Count > 0)
+        {
+            // Publish all events in a single batch operation
+            await PublishEventsBatchAsync(eventsToPublish, _completedEventsQueueName, cancellationToken);
+            
+            _logger.LogInformation("Published batch of {EventCount} completed events for {SiteCount} sites with event type {EventType}",
+                eventsToPublish.Count, events.Count, eventType);
+        }
+    }    private async Task PublishEventsBatchAsync<T>(List<T> events, string queueName, CancellationToken cancellationToken) where T : class
+    {
+        if (events == null || events.Count == 0) return;
+
+        const int maxRetries = 3;
+        var retryDelay = TimeSpan.FromSeconds(1);
+
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                await PublishBatchInternalAsync(events, queueName);
+                _logger.LogDebug("Published batch of {EventCount} events to queue {QueueName} on attempt {Attempt}",
+                    events.Count, queueName, attempt);
+                return; // Success, exit retry loop
+            }
+            catch (Exception ex) when (attempt < maxRetries && IsRetryableException(ex))
+            {
+                _logger.LogWarning(ex, "Failed to publish batch of {EventCount} events to queue {QueueName} on attempt {Attempt}. Retrying in {Delay}ms",
+                    events.Count, queueName, attempt, retryDelay.TotalMilliseconds);
+
+                await Task.Delay(retryDelay, cancellationToken);
+                retryDelay = TimeSpan.FromMilliseconds(retryDelay.TotalMilliseconds * 2); // Exponential backoff
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to publish batch of {EventCount} events to queue {QueueName} after {Attempts} attempts",
+                    events.Count, queueName, attempt);
+                throw;
+            }
+        }
+    }
+
     private EventType DetermineEventType(List<WordPressUser> users)
     {
         // Check if XML-RPC is supported based on user detection methods
@@ -224,14 +295,15 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             },
             _ => throw new ArgumentException($"Unsupported event type: {eventType}")
         };
-    }    private void PublishInternal<T>(T eventData, string queueName) where T : class
+    }    private async Task PublishInternalAsync<T>(T eventData, string queueName) where T : class
     {
-
-       
         if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
 
-        // Declare queue with thread-safe operation
-        _channel.QueueDeclare(
+        var channel = await GetChannelAsync();
+        try
+        {
+            // Declare queue with thread-safe operation
+            channel.QueueDeclare(
                 queue: queueName,
                 durable: true,
                 exclusive: false,
@@ -241,26 +313,118 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             var message = JsonConvert.SerializeObject(eventData);
             var body = Encoding.UTF8.GetBytes(message);
 
-            var properties = _channel.CreateBasicProperties();
+            var properties = channel.CreateBasicProperties();
             properties.Persistent = true;
             properties.MessageId = Guid.NewGuid().ToString();
             properties.Type = typeof(T).Name;
             properties.Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
-        // Publish with confirmation for reliability
-        _channel.ConfirmSelect();
-        _channel.BasicPublish(
+            // Publish with confirmation for reliability
+            channel.ConfirmSelect();
+            channel.BasicPublish(
                 exchange: "",
                 routingKey: queueName,
                 basicProperties: properties,
                 body: body);
 
             // Wait for confirmation to ensure message was received
-            if (!_channel.WaitForConfirms(TimeSpan.FromSeconds(10)))
+            if (!channel.WaitForConfirms(TimeSpan.FromSeconds(5))) // Reduced timeout
             {
                 throw new InvalidOperationException($"Failed to confirm message publication to queue {queueName}");
             }
-        
+        }
+        finally
+        {
+            ReturnChannel(channel);
+        }
+    }
+
+    private void PublishInternal<T>(T eventData, string queueName) where T : class
+    {
+        // Legacy synchronous method - use the old _channel for backward compatibility
+        if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
+
+        lock (_publishLock)
+        {
+            // Declare queue with thread-safe operation
+            _channel.QueueDeclare(
+                    queue: queueName,
+                    durable: true,
+                    exclusive: false,
+                    autoDelete: false,
+                    arguments: null);
+
+                var message = JsonConvert.SerializeObject(eventData);
+                var body = Encoding.UTF8.GetBytes(message);
+
+                var properties = _channel.CreateBasicProperties();
+                properties.Persistent = true;
+                properties.MessageId = Guid.NewGuid().ToString();
+                properties.Type = typeof(T).Name;
+                properties.Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+            // Publish with confirmation for reliability
+            _channel.ConfirmSelect();
+            _channel.BasicPublish(
+                    exchange: "",
+                    routingKey: queueName,
+                    basicProperties: properties,
+                    body: body);
+
+                // Wait for confirmation to ensure message was received
+                if (!_channel.WaitForConfirms(TimeSpan.FromSeconds(10)))
+                {
+                    throw new InvalidOperationException($"Failed to confirm message publication to queue {queueName}");
+                }
+        }
+    }    private async Task PublishBatchInternalAsync<T>(IList<T> events, string queueName) where T : class
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
+        if (events == null || events.Count == 0) return;
+
+        var channel = await GetChannelAsync();
+        try
+        {
+            // Declare queue with thread-safe operation
+            channel.QueueDeclare(
+                queue: queueName,
+                durable: true,
+                exclusive: false,
+                autoDelete: false,
+                arguments: null);
+
+            // Enable publisher confirms for batch
+            channel.ConfirmSelect();
+
+            // Publish all messages in the batch
+            foreach (var eventData in events)
+            {
+                var message = JsonConvert.SerializeObject(eventData);
+                var body = Encoding.UTF8.GetBytes(message);
+
+                var properties = channel.CreateBasicProperties();
+                properties.Persistent = true;
+                properties.MessageId = Guid.NewGuid().ToString();
+                properties.Type = typeof(T).Name;
+                properties.Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+                channel.BasicPublish(
+                    exchange: "",
+                    routingKey: queueName,
+                    basicProperties: properties,
+                    body: body);
+            }
+
+            // Wait for confirmation of all messages (reduced timeout for better performance)
+            if (!channel.WaitForConfirms(TimeSpan.FromSeconds(15)))
+            {
+                throw new InvalidOperationException($"Failed to confirm batch publication of {events.Count} messages to queue {queueName}");
+            }
+        }
+        finally
+        {
+            ReturnChannel(channel);
+        }
     }
 
     private void PublishBatchInternal<T>(IList<T> events, string queueName) where T : class
@@ -268,40 +432,43 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
         if (events == null || events.Count == 0) return;
 
-        // Declare queue with thread-safe operation
-        _channel.QueueDeclare(
-            queue: queueName,
-            durable: true,
-            exclusive: false,
-            autoDelete: false,
-            arguments: null);
-
-        // Enable publisher confirms for batch
-        _channel.ConfirmSelect();
-
-        // Publish all messages in the batch
-        foreach (var eventData in events)
+        lock (_publishLock)
         {
-            var message = JsonConvert.SerializeObject(eventData);
-            var body = Encoding.UTF8.GetBytes(message);
+            // Declare queue with thread-safe operation
+            _channel.QueueDeclare(
+                queue: queueName,
+                durable: true,
+                exclusive: false,
+                autoDelete: false,
+                arguments: null);
 
-            var properties = _channel.CreateBasicProperties();
-            properties.Persistent = true;
-            properties.MessageId = Guid.NewGuid().ToString();
-            properties.Type = typeof(T).Name;
-            properties.Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            // Enable publisher confirms for batch
+            _channel.ConfirmSelect();
 
-            _channel.BasicPublish(
-                exchange: "",
-                routingKey: queueName,
-                basicProperties: properties,
-                body: body);
-        }
+            // Publish all messages in the batch
+            foreach (var eventData in events)
+            {
+                var message = JsonConvert.SerializeObject(eventData);
+                var body = Encoding.UTF8.GetBytes(message);
 
-        // Wait for confirmation of all messages
-        if (!_channel.WaitForConfirms(TimeSpan.FromSeconds(30)))
-        {
-            throw new InvalidOperationException($"Failed to confirm batch publication of {events.Count} messages to queue {queueName}");
+                var properties = _channel.CreateBasicProperties();
+                properties.Persistent = true;
+                properties.MessageId = Guid.NewGuid().ToString();
+                properties.Type = typeof(T).Name;
+                properties.Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+                _channel.BasicPublish(
+                    exchange: "",
+                    routingKey: queueName,
+                    basicProperties: properties,
+                    body: body);
+            }
+
+            // Wait for confirmation of all messages
+            if (!_channel.WaitForConfirms(TimeSpan.FromSeconds(30)))
+            {
+                throw new InvalidOperationException($"Failed to confirm batch publication of {events.Count} messages to queue {queueName}");
+            }
         }
     }
     private IConnection GetConnection()
@@ -468,7 +635,46 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         return Task.FromResult<IEnumerable<SiteInfo>>(consumedEvents);
     }
 
-    public void Dispose()
+    private async Task<IModel> GetChannelAsync()
+    {
+        await _channelSemaphore.WaitAsync();
+        
+        try
+        {
+            if (_channelPool.TryDequeue(out var channel) && channel.IsOpen)
+            {
+                return channel;
+            }
+            
+            // Create new channel if pool is empty
+            var connection = GetConnection();
+            return connection.CreateModel();
+        }
+        catch
+        {
+            _channelSemaphore.Release();
+            throw;
+        }
+    }
+
+    private void ReturnChannel(IModel channel)
+    {
+        try
+        {
+            if (channel.IsOpen && _channelPool.Count < 10)
+            {
+                _channelPool.Enqueue(channel);
+            }
+            else
+            {
+                channel?.Dispose();
+            }
+        }
+        finally
+        {
+            _channelSemaphore.Release();
+        }
+    }    public void Dispose()
     {
         if (_disposed) return;
 
@@ -480,6 +686,48 @@ public class RabbitMQService : IRabbitMQService, IDisposable
 
             try
             {
+                // Dispose channel pool
+                while (_channelPool.TryDequeue(out var channel))
+                {
+                    try
+                    {
+                        if (channel.IsOpen) channel.Close();
+                        channel.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error disposing pooled channel");
+                    }
+                }
+
+                // Dispose main channel
+                if (_channel != null)
+                {
+                    try
+                    {
+                        if (_channel.IsOpen) _channel.Close();
+                        _channel.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error disposing main channel");
+                    }
+                }
+
+                // Dispose connections
+                if (_connectionNew != null)
+                {
+                    try
+                    {
+                        if (_connectionNew.IsOpen) _connectionNew.Close();
+                        _connectionNew.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error disposing new connection");
+                    }
+                }
+
                 if (_connection != null)
                 {
                     if (_connection.IsOpen)
@@ -489,6 +737,10 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                     _connection.Dispose();
                     _connection = null;
                 }
+
+                // Dispose semaphore
+                _channelSemaphore?.Dispose();
+
                 _logger.LogInformation("RabbitMQ connection disposed");
             }
             catch (Exception ex)

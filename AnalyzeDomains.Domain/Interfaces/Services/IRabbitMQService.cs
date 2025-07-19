@@ -7,6 +7,7 @@ namespace AnalyzeDomains.Domain.Interfaces.Services
         Task PublishAnalyzeEventsBatchAsync(IEnumerable<AnalyzeEvent> events, CancellationToken cancellationToken = default);
         Task PublishBatchCompletedEventAsync(CompletedEvent eventData, CancellationToken cancellationToken = default);
         Task PublishBatchCompletedEventAsync(CompletedEvent eventData, List<WordPressUser> users, CancellationToken cancellationToken = default);
+        Task PublishBatchCompletedEventsAsync(List<CompletedEvent> events, List<WordPressUser> users, CancellationToken cancellationToken = default);
         Task<IEnumerable<SiteInfo>> ConsumeAnalyzeEventsAsync(int maxMessages, CancellationToken cancellationToken = default);
         bool TestConnection();
     }
