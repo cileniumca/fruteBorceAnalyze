@@ -7,7 +7,6 @@ using Newtonsoft.Json;
 using RabbitMQ.Client;
 using System.Collections.Concurrent;
 using System.Text;
-using System.Threading.Channels;
 
 namespace AnalyzeDomains.Infrastructure.Services;
 
@@ -20,28 +19,21 @@ public class RabbitMQService : IRabbitMQService, IDisposable
     private readonly string _analyzeEvent;
     private volatile IConnection? _connection;
     private readonly object _connectionLock = new object();
-    private readonly object _publishLock = new object();
     private readonly ConnectionFactory _connectionFactory;
     private volatile bool _disposed = false;
 
-    private  IConnection _connectionNew;
-    private IModel _channel;
-
-    // Connection pooling and channel management optimization
+    // Channel pooling and management optimization
     private readonly SemaphoreSlim _channelSemaphore = new SemaphoreSlim(10, 10); // Limit concurrent channel usage
     private readonly ConcurrentQueue<IModel> _channelPool = new();
-    private readonly object _channelPoolLock = new();
-
+    private const int MaxChannelPoolSize = 10;
     public RabbitMQService(IConfiguration configuration, ILogger<RabbitMQService> logger)
     {
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _batchCompletedQueueName = _configuration.GetValue<string>("RabbitMQ:BatchCompletedQueueName") ?? "batch-processing-completed";
-        _completedEventsQueueName = _configuration.GetValue<string>("RabbitMQ:CompletedEventsQueueName") ?? "forcequeue";
-        _analyzeEvent = "analyzeforce";
+        _completedEventsQueueName = _configuration.GetValue<string>("RabbitMQ:CompletedEventsQueueName") ?? "xmlRPCQueue";
+        _analyzeEvent = "analyzeQueue";
         _connectionFactory = CreateConnectionFactory();
-        _connectionNew = GetConnection();
-        _channel = _connectionNew.CreateModel();
         _logger.LogInformation("RabbitMQ service initialized");
     }
     public async Task PublishEventAsync<T>(T eventData, string queueName, CancellationToken cancellationToken = default) where T : class
@@ -50,8 +42,6 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         if (eventData == null) throw new ArgumentNullException(nameof(eventData));
         if (string.IsNullOrWhiteSpace(queueName)) throw new ArgumentException("Queue name must be provided", nameof(queueName));
 
-        await Task.Yield(); // To maintain async signature without blocking
-
         const int maxRetries = 3;
         var retryDelay = TimeSpan.FromSeconds(1);
 
@@ -59,7 +49,7 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         {
             try
             {
-                PublishInternal(eventData, queueName);
+                await PublishInternalAsync(eventData, queueName);
                 _logger.LogDebug("Published event {EventType} to queue {QueueName} on attempt {Attempt}",
                     typeof(T).Name, queueName, attempt);
                 return; // Success, exit retry loop
@@ -82,28 +72,21 @@ public class RabbitMQService : IRabbitMQService, IDisposable
     }
     public bool TestConnection()
     {
-
-        _connectionNew = GetConnection();
-
         if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
 
         try
         {
-            // Use the same synchronization pattern as PublishInternal
-            lock (_publishLock)
-            {
-                var connection = GetConnection();
-                using var channel = connection.CreateModel();
-                // Test basic queue declaration to ensure full connectivity
-                var testQueueName = $"test-connection-{Guid.NewGuid()}";
-                channel.QueueDeclare(
-                    queue: testQueueName,
-                    durable: false,
-                    exclusive: true,
-                    autoDelete: true,
-                    arguments: null);
-                channel.QueueDelete(testQueueName);
-            }
+            var connection = GetConnection();
+            using var channel = connection.CreateModel();
+            // Test basic queue declaration to ensure full connectivity
+            var testQueueName = $"test-connection-{Guid.NewGuid()}";
+            channel.QueueDeclare(
+                queue: testQueueName,
+                durable: false,
+                exclusive: true,
+                autoDelete: true,
+                arguments: null);
+            channel.QueueDelete(testQueueName);
 
             _logger.LogInformation("RabbitMQ connection test successful");
             return true;
@@ -126,12 +109,12 @@ public class RabbitMQService : IRabbitMQService, IDisposable
     {
         await PublishEventAsync(eventData, _batchCompletedQueueName, cancellationToken);
         _logger.LogInformation("Published batch completed event");
-    }    public async Task PublishAnalyzeEventAsync(AnalyzeEvent eventData, CancellationToken cancellationToken = default)
+    }
+    public async Task PublishAnalyzeEventAsync(AnalyzeEvent eventData, CancellationToken cancellationToken = default)
     {
         await PublishEventAsync(eventData, _analyzeEvent, cancellationToken);
         _logger.LogInformation("Published analyze event");
     }
-
     public async Task PublishAnalyzeEventsBatchAsync(IEnumerable<AnalyzeEvent> events, CancellationToken cancellationToken = default)
     {
         if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
@@ -140,8 +123,6 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         var eventsList = events.ToList();
         if (eventsList.Count == 0) return;
 
-        await Task.Yield(); // To maintain async signature without blocking
-
         const int maxRetries = 3;
         var retryDelay = TimeSpan.FromSeconds(1);
 
@@ -149,7 +130,7 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         {
             try
             {
-                PublishBatchInternal(eventsList, _analyzeEvent);
+                await PublishBatchInternalAsync(eventsList, _analyzeEvent);
                 _logger.LogDebug("Published batch of {EventCount} analyze events on attempt {Attempt}",
                     eventsList.Count, attempt);
                 return; // Success, exit retry loop
@@ -208,21 +189,16 @@ public class RabbitMQService : IRabbitMQService, IDisposable
 
         // Determine event type based on XML-RPC support (same for all events from same domain)
         EventType eventType = DetermineEventType(users);
-        
+
         // Create all events to publish
         var eventsToPublish = new List<BaseCompletedEvent>();
-        
+
         foreach (var eventData in events)
         {
             if (eventType == EventType.XmlRpcCompleted)
             {
                 // Add both XML-RPC and WP Login events for XML-RPC capable sites
                 eventsToPublish.Add(CreateCompletedEvent(eventData, EventType.XmlRpcCompleted));
-                eventsToPublish.Add(CreateCompletedEvent(eventData, EventType.WpLoginCompleted));
-            }
-            else if (eventType == EventType.WpLoginCompleted)
-            {
-                eventsToPublish.Add(CreateCompletedEvent(eventData, EventType.WpLoginCompleted));
             }
         }
 
@@ -230,11 +206,12 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         {
             // Publish all events in a single batch operation
             await PublishEventsBatchAsync(eventsToPublish, _completedEventsQueueName, cancellationToken);
-            
+
             _logger.LogInformation("Published batch of {EventCount} completed events for {SiteCount} sites with event type {EventType}",
                 eventsToPublish.Count, events.Count, eventType);
         }
-    }    private async Task PublishEventsBatchAsync<T>(List<T> events, string queueName, CancellationToken cancellationToken) where T : class
+    }
+    private async Task PublishEventsBatchAsync<T>(List<T> events, string queueName, CancellationToken cancellationToken) where T : class
     {
         if (events == null || events.Count == 0) return;
 
@@ -295,7 +272,8 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             },
             _ => throw new ArgumentException($"Unsupported event type: {eventType}")
         };
-    }    private async Task PublishInternalAsync<T>(T eventData, string queueName) where T : class
+    }
+    private async Task PublishInternalAsync<T>(T eventData, string queueName) where T : class
     {
         if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
 
@@ -338,46 +316,7 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             ReturnChannel(channel);
         }
     }
-
-    private void PublishInternal<T>(T eventData, string queueName) where T : class
-    {
-        // Legacy synchronous method - use the old _channel for backward compatibility
-        if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
-
-        lock (_publishLock)
-        {
-            // Declare queue with thread-safe operation
-            _channel.QueueDeclare(
-                    queue: queueName,
-                    durable: true,
-                    exclusive: false,
-                    autoDelete: false,
-                    arguments: null);
-
-                var message = JsonConvert.SerializeObject(eventData);
-                var body = Encoding.UTF8.GetBytes(message);
-
-                var properties = _channel.CreateBasicProperties();
-                properties.Persistent = true;
-                properties.MessageId = Guid.NewGuid().ToString();
-                properties.Type = typeof(T).Name;
-                properties.Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-
-            // Publish with confirmation for reliability
-            _channel.ConfirmSelect();
-            _channel.BasicPublish(
-                    exchange: "",
-                    routingKey: queueName,
-                    basicProperties: properties,
-                    body: body);
-
-                // Wait for confirmation to ensure message was received
-                if (!_channel.WaitForConfirms(TimeSpan.FromSeconds(10)))
-                {
-                    throw new InvalidOperationException($"Failed to confirm message publication to queue {queueName}");
-                }
-        }
-    }    private async Task PublishBatchInternalAsync<T>(IList<T> events, string queueName) where T : class
+    private async Task PublishBatchInternalAsync<T>(IList<T> events, string queueName) where T : class
     {
         if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
         if (events == null || events.Count == 0) return;
@@ -426,51 +365,6 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             ReturnChannel(channel);
         }
     }
-
-    private void PublishBatchInternal<T>(IList<T> events, string queueName) where T : class
-    {
-        if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
-        if (events == null || events.Count == 0) return;
-
-        lock (_publishLock)
-        {
-            // Declare queue with thread-safe operation
-            _channel.QueueDeclare(
-                queue: queueName,
-                durable: true,
-                exclusive: false,
-                autoDelete: false,
-                arguments: null);
-
-            // Enable publisher confirms for batch
-            _channel.ConfirmSelect();
-
-            // Publish all messages in the batch
-            foreach (var eventData in events)
-            {
-                var message = JsonConvert.SerializeObject(eventData);
-                var body = Encoding.UTF8.GetBytes(message);
-
-                var properties = _channel.CreateBasicProperties();
-                properties.Persistent = true;
-                properties.MessageId = Guid.NewGuid().ToString();
-                properties.Type = typeof(T).Name;
-                properties.Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-
-                _channel.BasicPublish(
-                    exchange: "",
-                    routingKey: queueName,
-                    basicProperties: properties,
-                    body: body);
-            }
-
-            // Wait for confirmation of all messages
-            if (!_channel.WaitForConfirms(TimeSpan.FromSeconds(30)))
-            {
-                throw new InvalidOperationException($"Failed to confirm batch publication of {events.Count} messages to queue {queueName}");
-            }
-        }
-    }
     private IConnection GetConnection()
     {
         if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
@@ -512,7 +406,8 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         }
 
         return _connection!;
-    }    private ConnectionFactory CreateConnectionFactory()
+    }
+    private ConnectionFactory CreateConnectionFactory()
     {
         return new ConnectionFactory
         {
@@ -532,17 +427,18 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             RequestedChannelMax = 5000 // Increased channel limit
         };
     }
-    public Task<IEnumerable<SiteInfo>> ConsumeAnalyzeEventsAsync(int maxMessages, CancellationToken cancellationToken = default)
+    public async Task<IEnumerable<SiteInfo>> ConsumeAnalyzeEventsAsync(int maxMessages, CancellationToken cancellationToken = default)
     {
         if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
         if (maxMessages <= 0) throw new ArgumentException("Max messages must be greater than 0", nameof(maxMessages));
 
         var consumedEvents = new List<SiteInfo>();
-        
+        var channel = await GetChannelAsync();
+
         try
         {
             // Declare the queue to ensure it exists
-            _channel.QueueDeclare(
+            channel.QueueDeclare(
                 queue: _analyzeEvent,
                 durable: true,
                 exclusive: false,
@@ -550,26 +446,28 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                 arguments: null);
 
             // Get basic information about the queue
-            var queueInfo = _channel.QueueDeclarePassive(_analyzeEvent);
+            var queueInfo = channel.QueueDeclarePassive(_analyzeEvent);
             var availableMessages = Math.Min((int)queueInfo.MessageCount, maxMessages);
-            
-            _logger.LogInformation("Attempting to consume {RequestedMessages} messages from queue {QueueName}. Available messages: {AvailableMessages}", 
-                maxMessages, _analyzeEvent, queueInfo.MessageCount);            if (availableMessages == 0)
+
+            _logger.LogInformation("Attempting to consume {RequestedMessages} messages from queue {QueueName}. Available messages: {AvailableMessages}",
+                maxMessages, _analyzeEvent, queueInfo.MessageCount);
+
+            if (availableMessages == 0)
             {
-                return Task.FromResult<IEnumerable<SiteInfo>>(consumedEvents);
+                return consumedEvents;
             }
 
             // Consume messages one by one
             for (int i = 0; i < availableMessages && !cancellationToken.IsCancellationRequested; i++)
             {
-                var result = _channel.BasicGet(_analyzeEvent, false); // Don't auto-ack
-                
+                var result = channel.BasicGet(_analyzeEvent, false); // Don't auto-ack
+
                 if (result != null)
                 {
                     try
                     {
                         var messageBody = Encoding.UTF8.GetString(result.Body.ToArray());
-                        
+
                         // Try to deserialize as SiteInfo first
                         SiteInfo? siteInfo = null;
                         try
@@ -600,20 +498,20 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                         if (siteInfo != null && !string.IsNullOrEmpty(siteInfo.Domain))
                         {
                             consumedEvents.Add(siteInfo);
-                            _channel.BasicAck(result.DeliveryTag, false); // Acknowledge successful processing
-                            _logger.LogInformation("Successfully consumed and processed message {DeliveryTag} for site {SiteId}", 
+                            channel.BasicAck(result.DeliveryTag, false); // Acknowledge successful processing
+                            _logger.LogInformation("Successfully consumed and processed message {DeliveryTag} for site {SiteId}",
                                 result.DeliveryTag, siteInfo.SiteId);
                         }
                         else
                         {
                             _logger.LogInformation("Received invalid SiteInfo message. Rejecting message {DeliveryTag}", result.DeliveryTag);
-                            _channel.BasicReject(result.DeliveryTag, false); // Reject and don't requeue
+                            channel.BasicReject(result.DeliveryTag, false); // Reject and don't requeue
                         }
                     }
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, "Error processing message {DeliveryTag}. Rejecting message.", result.DeliveryTag);
-                        _channel.BasicReject(result.DeliveryTag, false); // Reject and don't requeue
+                        channel.BasicReject(result.DeliveryTag, false); // Reject and don't requeue
                     }
                 }
                 else
@@ -623,7 +521,7 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                 }
             }
 
-            _logger.LogInformation("Successfully consumed {ConsumedCount} messages from queue {QueueName}", 
+            _logger.LogInformation("Successfully consumed {ConsumedCount} messages from queue {QueueName}",
                 consumedEvents.Count, _analyzeEvent);
         }
         catch (Exception ex)
@@ -631,22 +529,25 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             _logger.LogError(ex, "Error consuming messages from queue {QueueName}", _analyzeEvent);
             throw;
         }
+        finally
+        {
+            ReturnChannel(channel);
+        }
 
-        return Task.FromResult<IEnumerable<SiteInfo>>(consumedEvents);
+        return consumedEvents;
     }
-
     private async Task<IModel> GetChannelAsync()
     {
         await _channelSemaphore.WaitAsync();
-        
+
         try
         {
             if (_channelPool.TryDequeue(out var channel) && channel.IsOpen)
             {
                 return channel;
             }
-            
-            // Create new channel if pool is empty
+
+            // Create new channel if pool is empty or channels are closed
             var connection = GetConnection();
             return connection.CreateModel();
         }
@@ -661,7 +562,7 @@ public class RabbitMQService : IRabbitMQService, IDisposable
     {
         try
         {
-            if (channel.IsOpen && _channelPool.Count < 10)
+            if (channel.IsOpen && _channelPool.Count < MaxChannelPoolSize)
             {
                 _channelPool.Enqueue(channel);
             }
@@ -674,7 +575,8 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         {
             _channelSemaphore.Release();
         }
-    }    public void Dispose()
+    }
+    public void Dispose()
     {
         if (_disposed) return;
 
@@ -700,42 +602,22 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                     }
                 }
 
-                // Dispose main channel
-                if (_channel != null)
-                {
-                    try
-                    {
-                        if (_channel.IsOpen) _channel.Close();
-                        _channel.Dispose();
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Error disposing main channel");
-                    }
-                }
-
-                // Dispose connections
-                if (_connectionNew != null)
-                {
-                    try
-                    {
-                        if (_connectionNew.IsOpen) _connectionNew.Close();
-                        _connectionNew.Dispose();
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Error disposing new connection");
-                    }
-                }
-
+                // Dispose main connection
                 if (_connection != null)
                 {
-                    if (_connection.IsOpen)
+                    try
                     {
-                        _connection.Close();
+                        if (_connection.IsOpen)
+                        {
+                            _connection.Close();
+                        }
+                        _connection.Dispose();
+                        _connection = null;
                     }
-                    _connection.Dispose();
-                    _connection = null;
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error disposing connection");
+                    }
                 }
 
                 // Dispose semaphore
