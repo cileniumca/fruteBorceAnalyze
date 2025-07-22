@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 using System.Collections.Concurrent;
 using System.Text;
 
@@ -69,8 +70,7 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                 throw;
             }
         }
-    }
-    public bool TestConnection()
+    }    public bool TestConnection()
     {
         if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
 
@@ -188,18 +188,16 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         if (events == null || events.Count == 0) return;
 
         // Determine event type based on XML-RPC support (same for all events from same domain)
-        EventType eventType = DetermineEventType(users);
+       
 
         // Create all events to publish
         var eventsToPublish = new List<BaseCompletedEvent>();
 
         foreach (var eventData in events)
-        {
-            if (eventType == EventType.XmlRpcCompleted)
-            {
+        {          
                 // Add both XML-RPC and WP Login events for XML-RPC capable sites
                 eventsToPublish.Add(CreateCompletedEvent(eventData, EventType.XmlRpcCompleted));
-            }
+            
         }
 
         if (eventsToPublish.Count > 0)
@@ -207,8 +205,8 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             // Publish all events in a single batch operation
             await PublishEventsBatchAsync(eventsToPublish, _completedEventsQueueName, cancellationToken);
 
-            _logger.LogInformation("Published batch of {EventCount} completed events for {SiteCount} sites with event type {EventType}",
-                eventsToPublish.Count, events.Count, eventType);
+            _logger.LogInformation("Published batch of {EventCount} completed events for {SiteCount} sites with event type xmlRPC",
+                eventsToPublish.Count, events.Count);
         }
     }
     private async Task PublishEventsBatchAsync<T>(List<T> events, string queueName, CancellationToken cancellationToken) where T : class
@@ -257,13 +255,6 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         return eventType switch
         {
             EventType.XmlRpcCompleted => new XmlRpcCompletedEvent
-            {
-                SiteId = eventData.SiteId,
-                FullUrl = eventData.FullUrl,
-                LoginPage = eventData.LoginPage,
-                Login = eventData.Login
-            },
-            EventType.WpLoginCompleted => new WpLoginCompletedEvent
             {
                 SiteId = eventData.SiteId,
                 FullUrl = eventData.FullUrl,
@@ -390,9 +381,13 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                             {
                                 _logger.LogWarning(ex, "Error disposing old RabbitMQ connection");
                             }
-                        }
-
-                        _connection = _connectionFactory.CreateConnection();
+                        }                        _connection = _connectionFactory.CreateConnection();
+                        
+                        // Add connection event handlers for proper channel pool management
+                        _connection.ConnectionShutdown += OnConnectionShutdown;
+                        _connection.ConnectionBlocked += OnConnectionBlocked;
+                        _connection.ConnectionUnblocked += OnConnectionUnblocked;
+                        
                         _logger.LogInformation("RabbitMQ connection established");
                     }
                     catch (Exception ex)
@@ -406,8 +401,7 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         }
 
         return _connection!;
-    }
-    private ConnectionFactory CreateConnectionFactory()
+    }    private ConnectionFactory CreateConnectionFactory()
     {
         return new ConnectionFactory
         {
@@ -417,15 +411,47 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             Password = _configuration.GetValue<string>("RabbitMQ:Password") ?? "guest",
             VirtualHost = _configuration.GetValue<string>("RabbitMQ:VirtualHost") ?? "/",
             AutomaticRecoveryEnabled = true,
-            NetworkRecoveryInterval = TimeSpan.FromSeconds(5), // Faster recovery
-            RequestedHeartbeat = TimeSpan.FromSeconds(30), // More frequent heartbeats
-            RequestedConnectionTimeout = TimeSpan.FromSeconds(15), // Faster timeout
+            NetworkRecoveryInterval = TimeSpan.FromSeconds(10), // Slower recovery
+            RequestedHeartbeat = TimeSpan.FromSeconds(60), // Longer heartbeats to prevent disconnections
+            RequestedConnectionTimeout = TimeSpan.FromSeconds(30), // Longer timeout to prevent timeout exceptions
             // Additional settings for better performance and thread safety
             TopologyRecoveryEnabled = true,
-            ContinuationTimeout = TimeSpan.FromSeconds(10), // Faster timeout
-            HandshakeContinuationTimeout = TimeSpan.FromSeconds(5), // Faster timeout
+            ContinuationTimeout = TimeSpan.FromSeconds(20), // Longer timeout
+            HandshakeContinuationTimeout = TimeSpan.FromSeconds(10), // Longer timeout
             RequestedChannelMax = 5000 // Increased channel limit
         };
+    }// Connection event handlers for proper resource management
+    private void OnConnectionShutdown(object? sender, ShutdownEventArgs e)
+    {
+        _logger.LogWarning("RabbitMQ connection shutdown: {Reason}", e.ReplyText);
+        ClearChannelPool();
+    }
+
+    private void OnConnectionBlocked(object? sender, ConnectionBlockedEventArgs e)
+    {
+        _logger.LogWarning("RabbitMQ connection blocked: {Reason}", e.Reason);
+    }
+
+    private void OnConnectionUnblocked(object? sender, EventArgs e)
+    {
+        _logger.LogInformation("RabbitMQ connection unblocked");
+    }
+
+    // Clear all channels from pool when connection issues occur
+    private void ClearChannelPool()
+    {
+        while (_channelPool.TryDequeue(out var channel))
+        {
+            try
+            {
+                channel?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("Error disposing channel during pool cleanup: {Error}", ex.Message);
+            }
+        }
+        _logger.LogDebug("Channel pool cleared due to connection issues");
     }
     public async Task<IEnumerable<SiteInfo>> ConsumeAnalyzeEventsAsync(int maxMessages, CancellationToken cancellationToken = default)
     {
@@ -535,21 +561,43 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         }
 
         return consumedEvents;
-    }
-    private async Task<IModel> GetChannelAsync()
+    }    private async Task<IModel> GetChannelAsync()
     {
         await _channelSemaphore.WaitAsync();
 
         try
         {
-            if (_channelPool.TryDequeue(out var channel) && channel.IsOpen)
+            // Check pool for valid channels - validate both IsOpen and !IsClosed
+            while (_channelPool.TryDequeue(out var pooledChannel))
             {
-                return channel;
+                if (IsChannelValid(pooledChannel))
+                {
+                    return pooledChannel;
+                }
+                
+                // Channel is invalid - dispose it
+                try
+                {
+                    pooledChannel?.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug("Error disposing invalid channel: {Error}", ex.Message);
+                }
             }
 
-            // Create new channel if pool is empty or channels are closed
+            // Create new channel with validation
             var connection = GetConnection();
-            return connection.CreateModel();
+            var channel = connection.CreateModel();
+            
+            // Validate new channel before returning
+            if (!IsChannelValid(channel))
+            {
+                channel?.Dispose();
+                throw new InvalidOperationException("Created channel is not valid");
+            }
+            
+            return channel;
         }
         catch
         {
@@ -558,17 +606,29 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         }
     }
 
-    private void ReturnChannel(IModel channel)
+    // Helper method to validate channel state
+    private static bool IsChannelValid(IModel? channel)
+    {
+        return channel != null && channel.IsOpen && !channel.IsClosed;
+    }    private void ReturnChannel(IModel channel)
     {
         try
         {
-            if (channel.IsOpen && _channelPool.Count < MaxChannelPoolSize)
+            if (IsChannelValid(channel) && _channelPool.Count < MaxChannelPoolSize)
             {
                 _channelPool.Enqueue(channel);
             }
             else
             {
-                channel?.Dispose();
+                // Channel is invalid or pool is full - dispose it
+                try
+                {
+                    channel?.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug("Error disposing channel: {Error}", ex.Message);
+                }
             }
         }
         finally
