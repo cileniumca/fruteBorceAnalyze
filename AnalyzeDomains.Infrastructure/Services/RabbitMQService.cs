@@ -8,6 +8,7 @@ using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using System.Collections.Concurrent;
 using System.Text;
+using SystemTextJson = System.Text.Json;
 
 namespace AnalyzeDomains.Infrastructure.Services;
 
@@ -23,10 +24,16 @@ public class RabbitMQService : IRabbitMQService, IDisposable
     private readonly ConnectionFactory _connectionFactory;
     private volatile bool _disposed = false;
 
-    // Channel pooling and management optimization
-    private readonly SemaphoreSlim _channelSemaphore = new SemaphoreSlim(10, 10); // Limit concurrent channel usage
+    // Fast serialization configuration to maintain compatibility with Newtonsoft.Json format
+    private static readonly SystemTextJson.JsonSerializerOptions _fastJsonOptions = new()
+    {
+        PropertyNamingPolicy = SystemTextJson.JsonNamingPolicy.CamelCase,
+        WriteIndented = false,
+        DefaultIgnoreCondition = SystemTextJson.Serialization.JsonIgnoreCondition.WhenWritingNull
+    };// Channel pooling and management optimization
+    private readonly SemaphoreSlim _channelSemaphore = new SemaphoreSlim(50, 50); // Increased concurrent channel usage
     private readonly ConcurrentQueue<IModel> _channelPool = new();
-    private const int MaxChannelPoolSize = 10;
+    private const int MaxChannelPoolSize = 50;
     public RabbitMQService(IConfiguration configuration, ILogger<RabbitMQService> logger)
     {
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
@@ -188,16 +195,27 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         if (events == null || events.Count == 0) return;
 
         // Determine event type based on XML-RPC support (same for all events from same domain)
+<<<<<<< HEAD
        
+=======
+
+>>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
 
         // Create all events to publish
         var eventsToPublish = new List<BaseCompletedEvent>();
 
         foreach (var eventData in events)
+<<<<<<< HEAD
         {          
                 // Add both XML-RPC and WP Login events for XML-RPC capable sites
                 eventsToPublish.Add(CreateCompletedEvent(eventData, EventType.XmlRpcCompleted));
             
+=======
+        {
+            // Add both XML-RPC and WP Login events for XML-RPC capable sites
+            eventsToPublish.Add(CreateCompletedEvent(eventData, EventType.XmlRpcCompleted));
+
+>>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
         }
 
         if (eventsToPublish.Count > 0)
@@ -267,7 +285,6 @@ public class RabbitMQService : IRabbitMQService, IDisposable
     private async Task PublishInternalAsync<T>(T eventData, string queueName) where T : class
     {
         if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
-
         var channel = await GetChannelAsync();
         try
         {
@@ -279,7 +296,7 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                 autoDelete: false,
                 arguments: null);
 
-            var message = JsonConvert.SerializeObject(eventData);
+            var message = FastSerialize(eventData);
             var body = Encoding.UTF8.GetBytes(message);
 
             var properties = channel.CreateBasicProperties();
@@ -294,10 +311,8 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                 exchange: "",
                 routingKey: queueName,
                 basicProperties: properties,
-                body: body);
-
-            // Wait for confirmation to ensure message was received
-            if (!channel.WaitForConfirms(TimeSpan.FromSeconds(5))) // Reduced timeout
+                body: body);            // Wait for confirmation to ensure message was received
+            if (!channel.WaitForConfirms(TimeSpan.FromSeconds(2))) // Reduced timeout
             {
                 throw new InvalidOperationException($"Failed to confirm message publication to queue {queueName}");
             }
@@ -326,10 +341,11 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             // Enable publisher confirms for batch
             channel.ConfirmSelect();
 
-            // Publish all messages in the batch
+            // Use batch publishing for better performance
+            var batch = channel.CreateBasicPublishBatch();
             foreach (var eventData in events)
             {
-                var message = JsonConvert.SerializeObject(eventData);
+                var message = FastSerialize(eventData);
                 var body = Encoding.UTF8.GetBytes(message);
 
                 var properties = channel.CreateBasicProperties();
@@ -338,15 +354,14 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                 properties.Type = typeof(T).Name;
                 properties.Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
-                channel.BasicPublish(
-                    exchange: "",
-                    routingKey: queueName,
-                    basicProperties: properties,
-                    body: body);
+                batch.Add("", queueName, false, properties, new ReadOnlyMemory<byte>(body));
             }
 
+            // Publish all messages in a single batch operation
+            batch.Publish();
+
             // Wait for confirmation of all messages (reduced timeout for better performance)
-            if (!channel.WaitForConfirms(TimeSpan.FromSeconds(15)))
+            if (!channel.WaitForConfirms(TimeSpan.FromSeconds(10)))
             {
                 throw new InvalidOperationException($"Failed to confirm batch publication of {events.Count} messages to queue {queueName}");
             }
@@ -381,13 +396,23 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                             {
                                 _logger.LogWarning(ex, "Error disposing old RabbitMQ connection");
                             }
+<<<<<<< HEAD
                         }                        _connection = _connectionFactory.CreateConnection();
                         
+=======
+                        }
+                        _connection = _connectionFactory.CreateConnection();
+
+>>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
                         // Add connection event handlers for proper channel pool management
                         _connection.ConnectionShutdown += OnConnectionShutdown;
                         _connection.ConnectionBlocked += OnConnectionBlocked;
                         _connection.ConnectionUnblocked += OnConnectionUnblocked;
+<<<<<<< HEAD
                         
+=======
+
+>>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
                         _logger.LogInformation("RabbitMQ connection established");
                     }
                     catch (Exception ex)
@@ -411,14 +436,24 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             Password = _configuration.GetValue<string>("RabbitMQ:Password") ?? "guest",
             VirtualHost = _configuration.GetValue<string>("RabbitMQ:VirtualHost") ?? "/",
             AutomaticRecoveryEnabled = true,
+<<<<<<< HEAD
             NetworkRecoveryInterval = TimeSpan.FromSeconds(10), // Slower recovery
+=======
+            NetworkRecoveryInterval = TimeSpan.FromSeconds(5), // Faster recovery
+>>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
             RequestedHeartbeat = TimeSpan.FromSeconds(60), // Longer heartbeats to prevent disconnections
             RequestedConnectionTimeout = TimeSpan.FromSeconds(30), // Longer timeout to prevent timeout exceptions
             // Additional settings for better performance and thread safety
             TopologyRecoveryEnabled = true,
             ContinuationTimeout = TimeSpan.FromSeconds(20), // Longer timeout
             HandshakeContinuationTimeout = TimeSpan.FromSeconds(10), // Longer timeout
+<<<<<<< HEAD
             RequestedChannelMax = 5000 // Increased channel limit
+=======
+            RequestedChannelMax = 5000, // Increased channel limit
+            // Performance optimizations
+            DispatchConsumersAsync = true // Enable async consumer dispatching
+>>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
         };
     }// Connection event handlers for proper resource management
     private void OnConnectionShutdown(object? sender, ShutdownEventArgs e)
@@ -574,7 +609,11 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                 {
                     return pooledChannel;
                 }
+<<<<<<< HEAD
                 
+=======
+
+>>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
                 // Channel is invalid - dispose it
                 try
                 {
@@ -589,14 +628,22 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             // Create new channel with validation
             var connection = GetConnection();
             var channel = connection.CreateModel();
+<<<<<<< HEAD
             
+=======
+
+>>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
             // Validate new channel before returning
             if (!IsChannelValid(channel))
             {
                 channel?.Dispose();
                 throw new InvalidOperationException("Created channel is not valid");
             }
+<<<<<<< HEAD
             
+=======
+
+>>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
             return channel;
         }
         catch
@@ -610,7 +657,12 @@ public class RabbitMQService : IRabbitMQService, IDisposable
     private static bool IsChannelValid(IModel? channel)
     {
         return channel != null && channel.IsOpen && !channel.IsClosed;
+<<<<<<< HEAD
     }    private void ReturnChannel(IModel channel)
+=======
+    }
+    private void ReturnChannel(IModel channel)
+>>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
     {
         try
         {
@@ -689,6 +741,24 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             {
                 _logger.LogWarning(ex, "Error disposing RabbitMQ connection");
             }
+        }
+    }
+
+    /// <summary>
+    /// Fast serialization method that uses System.Text.Json for performance 
+    /// while maintaining format compatibility with Newtonsoft.Json
+    /// </summary>
+    private static string FastSerialize<T>(T obj) where T : class
+    {
+        try
+        {
+            // Try System.Text.Json first for performance (3-5x faster)
+            return SystemTextJson.JsonSerializer.Serialize(obj, _fastJsonOptions);
+        }
+        catch
+        {
+            // Fallback to Newtonsoft.Json for compatibility if needed
+            return JsonConvert.SerializeObject(obj);
         }
     }
 }

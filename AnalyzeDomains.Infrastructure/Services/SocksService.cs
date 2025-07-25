@@ -1,6 +1,7 @@
-﻿using AnalyzeDomains.Domain.Interfaces.Services;
+using AnalyzeDomains.Domain.Interfaces.Services;
 using AnalyzeDomains.Domain.Models;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using MihaZupan;
 using System.Collections.Concurrent;
 
@@ -9,77 +10,116 @@ namespace AnalyzeDomains.Infrastructure.Services
     public class SocksService : ISocksService, IDisposable
     {
         private readonly IConfiguration _configuration;
-        private readonly ConcurrentDictionary<DateTime, HttpClient> _httpClientByDate = new();
-        private static readonly Random _random = Random.Shared; // Thread-safe static random
-        private readonly SemaphoreSlim _semaphore = new(64, 64); // Ensures single HttpClient creation
+        private readonly IMinIOSocksConfigurationService _minioConfigService;
+        private readonly ILogger<SocksService> _logger;
+        private readonly ConcurrentDictionary<string, HttpClient> _httpClientPool = new();
+        private readonly SemaphoreSlim _semaphore = new(64, 64);
+        private readonly Timer _configurationCheckTimer;
+        private readonly Timer _healthCheckTimer;
+
+        private SocksProxyConfiguration _currentConfiguration = new();
+        private DateTime _lastConfigurationLoad = DateTime.MinValue;
+        private int _currentProxyIndex = 0;
+        private readonly object _indexLock = new object();
+        private bool _disposed = false;
+
+        private static readonly Random _random = Random.Shared;
         private readonly IReadOnlyList<string> UserAgents = new List<string>()
         {
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Ubuntu Chromium/37.0.2062.94 Chrome/37.0.2062.94 Safari/537.36","Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko","Mozilla/5.0 (Windows NT 6.1; WOW64; rv:40.0) Gecko/20100101 Firefox/40.0","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_5) AppleWebKit/600.8.9 (KHTML, like Gecko) Version/8.0.8 Safari/600.8.9","Mozilla/5.0 (iPad; CPU OS 8_4_1 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) Version/8.0 Mobile/12H321 Safari/600.1.4","Mozilla/5.0 (Windows NT 6.3; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/42.0.2311.135 Safari/537.36 Edge/12.10240","Mozilla/5.0 (Windows NT 6.3; WOW64; rv:40.0) Gecko/20100101 Firefox/40.0","Mozilla/5.0 (Windows NT 6.3; WOW64; Trident/7.0; rv:11.0) like Gecko","Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Windows NT 6.1; Trident/7.0; rv:11.0) like Gecko","Mozilla/5.0 (Windows NT 10.0; WOW64; rv:40.0) Gecko/20100101 Firefox/40.0","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_4) AppleWebKit/600.7.12 (KHTML, like Gecko) Version/8.0.7 Safari/600.7.12","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Macintosh; Intel Mac OS X 10.10; rv:40.0) Gecko/20100101 Firefox/40.0","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) AppleWebKit/600.8.9 (KHTML, like Gecko) Version/7.1.8 Safari/537.85.17","Mozilla/5.0 (iPad; CPU OS 8_4 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) Version/8.0 Mobile/12H143 Safari/600.1.4","Mozilla/5.0 (iPad; CPU OS 8_3 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) Version/8.0 Mobile/12F69 Safari/600.1.4","Mozilla/5.0 (Windows NT 6.1; rv:40.0) Gecko/20100101 Firefox/40.0","Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; WOW64; Trident/6.0)","Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; WOW64; Trident/5.0)","Mozilla/5.0 (Windows NT 6.3; WOW64; Trident/7.0; Touch; rv:11.0) like Gecko","Mozilla/5.0 (Windows NT 5.1; rv:40.0) Gecko/20100101 Firefox/40.0","Mozilla/5.0 (Windows NT 5.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_3) AppleWebKit/600.6.3 (KHTML, like Gecko) Version/8.0.6 Safari/600.6.3","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_3) AppleWebKit/600.5.17 (KHTML, like Gecko) Version/8.0.5 Safari/600.5.17","Mozilla/5.0 (Windows NT 6.1; WOW64; rv:38.0) Gecko/20100101 Firefox/38.0","Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36","Mozilla/5.0 (iPhone; CPU iPhone OS 8_4_1 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) Version/8.0 Mobile/12H321 Safari/600.1.4","Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko","Mozilla/5.0 (iPad; CPU OS 7_1_2 like Mac OS X) AppleWebKit/537.51.2 (KHTML, like Gecko) Version/7.0 Mobile/11D257 Safari/9537.53","Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; Trident/5.0)","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Macintosh; Intel Mac OS X 10.9; rv:40.0) Gecko/20100101 Firefox/40.0","Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0)","Mozilla/5.0 (Windows NT 6.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Windows NT 6.3; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36","Mozilla/5.0 (X11; CrOS x86_64 7077.134.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.156 Safari/537.36","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) AppleWebKit/600.7.12 (KHTML, like Gecko) Version/7.1.7 Safari/537.85.16","Mozilla/5.0 (Windows NT 6.0; rv:40.0) Gecko/20100101 Firefox/40.0","Mozilla/5.0 (Macintosh; Intel Mac OS X 10.6; rv:40.0) Gecko/20100101 Firefox/40.0","Mozilla/5.0 (iPad; CPU OS 8_1_3 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) Version/8.0 Mobile/12B466 Safari/600.1.4","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_2) AppleWebKit/600.3.18 (KHTML, like Gecko) Version/8.0.3 Safari/600.3.18","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Windows NT 6.2; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Windows NT 6.1; Win64; x64; Trident/7.0; rv:11.0) like Gecko","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36","Mozilla/5.0 (iPad; CPU OS 8_1_2 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) Version/8.0 Mobile/12B440 Safari/600.1.4","Mozilla/5.0 (Linux; U; Android 4.0.3; en-us; KFTT Build/IML74K) AppleWebKit/537.36 (KHTML, like Gecko) Silk/3.68 like Chrome/39.0.2171.93 Safari/537.36","Mozilla/5.0 (iPad; CPU OS 8_2 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) Version/8.0 Mobile/12D508 Safari/600.1.4","Mozilla/5.0 (Windows NT 6.1; WOW64; rv:39.0) Gecko/20100101 Firefox/39.0","Mozilla/5.0 (iPad; CPU OS 7_1_1 like Mac OS X) AppleWebKit/537.51.2 (KHTML, like Gecko) Version/7.0 Mobile/11D201 Safari/9537.53","Mozilla/5.0 (Linux; U; Android 4.4.3; en-us; KFTHWI Build/KTU84M) AppleWebKit/537.36 (KHTML, like Gecko) Silk/3.68 like Chrome/39.0.2171.93 Safari/537.36","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) AppleWebKit/600.6.3 (KHTML, like Gecko) Version/7.1.6 Safari/537.85.15","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_2) AppleWebKit/600.4.10 (KHTML, like Gecko) Version/8.0.4 Safari/600.4.10","Mozilla/5.0 (Macintosh; Intel Mac OS X 10.7; rv:40.0) Gecko/20100101 Firefox/40.0","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) AppleWebKit/537.78.2 (KHTML, like Gecko) Version/7.0.6 Safari/537.78.2","Mozilla/5.0 (iPad; CPU OS 8_4_1 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) CriOS/45.0.2454.68 Mobile/12H321 Safari/600.1.4","Mozilla/5.0 (Windows NT 6.3; Win64; x64; Trident/7.0; Touch; rv:11.0) like Gecko","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_6_8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (iPad; CPU OS 8_1 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) Version/8.0 Mobile/12B410 Safari/600.1.4","Mozilla/5.0 (iPad; CPU OS 7_0_4 like Mac OS X) AppleWebKit/537.51.1 (KHTML, like Gecko) Version/7.0 Mobile/11B554a Safari/9537.53","Mozilla/5.0 (Windows NT 6.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Windows NT 6.3; Win64; x64; Trident/7.0; rv:11.0) like Gecko","Mozilla/5.0 (Windows NT 6.3; WOW64; Trident/7.0; TNJB; rv:11.0) like Gecko","Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/31.0.1650.63 Safari/537.36","Mozilla/5.0 (Windows NT 6.3; ARM; Trident/7.0; Touch; rv:11.0) like Gecko","Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:40.0) Gecko/20100101 Firefox/40.0","Mozilla/5.0 (Windows NT 6.3; WOW64; Trident/7.0; MDDCJS; rv:11.0) like Gecko","Mozilla/5.0 (Windows NT 6.0; WOW64; rv:40.0) Gecko/20100101 Firefox/40.0","Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36","Mozilla/5.0 (Windows NT 6.2; WOW64; rv:40.0) Gecko/20100101 Firefox/40.0","Mozilla/5.0 (iPhone; CPU iPhone OS 8_4 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) Version/8.0 Mobile/12H143 Safari/600.1.4","Mozilla/5.0 (Linux; U; Android 4.4.3; en-us; KFASWI Build/KTU84M) AppleWebKit/537.36 (KHTML, like Gecko) Silk/3.68 like Chrome/39.0.2171.93 Safari/537.36","Mozilla/5.0 (iPad; CPU OS 8_4_1 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) GSA/7.0.55539 Mobile/12H321 Safari/600.1.4","Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.155 Safari/537.36","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; Touch; rv:11.0) like Gecko","Mozilla/5.0 (Macintosh; Intel Mac OS X 10.8; rv:40.0) Gecko/20100101 Firefox/40.0","Mozilla/5.0 (Windows NT 6.1; WOW64; rv:31.0) Gecko/20100101 Firefox/31.0","Mozilla/5.0 (iPhone; CPU iPhone OS 8_3 like Mac OS X) AppleWebKit/600.1.4 (KHTML, like Gecko) Version/8.0 Mobile/12F70 Safari/600.1.4","Mozilla/5.0 (Windows NT 6.3; WOW64; Trident/7.0; MATBJS; rv:11.0) like Gecko","Mozilla/5.0 (Linux; U; Android 4.0.4; en-us; KFJWI Build/IMM76D) AppleWebKit/537.36 (KHTML, like Gecko) Silk/3.68 like Chrome/39.0.2171.93 Safari/537.36","Mozilla/5.0 (iPad; CPU OS 7_1 like Mac OS X) AppleWebKit/537.51.2 (KHTML, like Gecko) Version/7.0 Mobile/11D167 Safari/9537.53","Mozilla/5.0 (X11; CrOS armv7l 7077.134.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.156 Safari/537.36","Mozilla/5.0 (X11; Linux x86_64; rv:34.0) Gecko/20100101 Firefox/34.0","Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.1; WOW64; Trident/7.0; SLCC2; .NET CLR 2.0.50727; .NET CLR 3.5.30729; .NET CLR 3.0.30729; Media Center PC 6.0; .NET4.0C; .NET4.0E)","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10) AppleWebKit/600.1.25 (KHTML, like Gecko) Version/8.0 Safari/600.1.25","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/600.2.5 (KHTML, like Gecko) Version/8.0.2 Safari/600.2.5","Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/43.0.2357.134 Safari/537.36","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36","Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/31.0.1650.63 Safari/537.36","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36","Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/600.1.25 (KHTML, like Gecko) Version/8.0 Safari/600.1.25","Mozilla/5.0 (Macintosh; Intel Mac OS X 10.10; rv:39.0) Gecko/20100101 Firefox/39.0"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:89.0) Gecko/20100101 Firefox/89.0",
+            "Mozilla/5.0 (X11; Linux x86_64; rv:89.0) Gecko/20100101 Firefox/89.0",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 Edg/91.0.864.59",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15"
         };
-        public SocksService(IConfiguration configuration)
-        {
-            _configuration = configuration;
-        }
-        public async Task<HttpClient> GetHttpWithSocksConnection()
-        {
-            var now = DateTime.UtcNow;
 
-            // Quick check without lock for performance - thread-safe read
-            if (_httpClientByDate.Count > 0)
+        public SocksService(IConfiguration configuration, IMinIOSocksConfigurationService minioConfigService, ILogger<SocksService> logger)
+        {
+            _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+            _minioConfigService = minioConfigService ?? throw new ArgumentNullException(nameof(minioConfigService));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+
+            // Initialize configuration
+            _ = Task.Run(async () => await LoadInitialConfigurationAsync());
+
+            // Set up periodic configuration check (every 10 minutes)
+            _configurationCheckTimer = new Timer(CheckConfigurationUpdate, null, TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(10));
+
+            // Set up periodic health check (every 5 minutes)
+            _healthCheckTimer = new Timer(PerformHealthChecks, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+
+            _logger.LogInformation("SocksService initialized with MinIO configuration support");
+        }
+        public Task<HttpClient> GetHttpWithSocksConnection()
+        {
+            // Fallback to the original single-proxy configuration for backward compatibility
+            var socksSettings = _configuration.GetSection("SocksSettings").Get<SocksSettings>();
+            if (socksSettings?.Host == null)
             {
-                var latestEntry = _httpClientByDate.OrderByDescending(x => x.Key).FirstOrDefault();
-                if (latestEntry.Key != default && now <= latestEntry.Key.AddMinutes(1))
-                {
-                    return latestEntry.Value;
-                }
+                throw new InvalidOperationException("Socks host settings are not properly configured");
             }
 
-            // Use semaphore to ensure only one thread creates a new client
+            var clientKey = $"{socksSettings.Host}:{socksSettings.Port}:{socksSettings.UserName}";
+
+            var client = _httpClientPool.GetOrAdd(clientKey, _ => CreateHttpClientWithProxy(socksSettings));
+            return Task.FromResult(client);
+        }
+
+        public async Task<HttpClient> GetHttpWithBalancedSocksConnection()
+        {
+            var healthyProxies = await GetHealthyProxiesAsync();
+            var proxiesList = healthyProxies.ToList();
+
+            if (!proxiesList.Any())
+            {
+                _logger.LogWarning("No healthy proxies available, falling back to configuration-based proxy");
+                return await GetHttpWithSocksConnection();
+            }
+
+            // Round-robin selection
+            SocksSettings selectedProxy;
+            lock (_indexLock)
+            {
+                selectedProxy = proxiesList[_currentProxyIndex % proxiesList.Count];
+                _currentProxyIndex = (_currentProxyIndex + 1) % proxiesList.Count;
+            }            // Increment request count for the selected proxy
+            lock (_indexLock)
+            {
+                selectedProxy.RequestCount++;
+            }
+
+            var clientKey = $"{selectedProxy.Host}:{selectedProxy.Port}:{selectedProxy.UserName}";
+
+            return _httpClientPool.GetOrAdd(clientKey, _ => CreateHttpClientWithProxy(selectedProxy));
+        }
+
+        public async Task ReloadConfigurationAsync()
+        {
             await _semaphore.WaitAsync();
             try
             {
-                // Double-check pattern - another thread might have created a client
-                if (_httpClientByDate.Count > 0)
+                _logger.LogInformation("Manually reloading SOCKS configuration...");
+                var newConfiguration = await _minioConfigService.LoadConfigurationAsync();
+
+                if (newConfiguration.Proxies.Count > 0)
                 {
-                    var latestEntry = _httpClientByDate.OrderByDescending(x => x.Key).FirstOrDefault();
-                    if (latestEntry.Key != default && now <= latestEntry.Key.AddMinutes(1))
-                    {
-                        return latestEntry.Value;
-                    }
+                    var oldConfiguration = _currentConfiguration;
+                    _currentConfiguration = newConfiguration;
+                    _lastConfigurationLoad = DateTime.UtcNow;
+
+                    _logger.LogInformation("Configuration reloaded successfully. Proxy count changed from {OldCount} to {NewCount}",
+                        oldConfiguration.Proxies.Count, newConfiguration.Proxies.Count);
+
+                    // Clear old HTTP clients that are no longer needed
+                    await ClearUnusedHttpClientsAsync(oldConfiguration);
                 }
-
-                // Create new client
-                var socksSettings = _configuration.GetSection("SocksSettings").Get<SocksSettings>();
-                if (socksSettings?.Host == null)
-                {
-                    throw new InvalidOperationException("Socks host settings are not properly configured");
-                }
-
-                var proxy = new HttpToSocks5Proxy(socksSettings.Host, socksSettings.Port,
-                                                socksSettings.UserName, socksSettings.Password);
-
-                var httpClientHandler = new HttpClientHandler()
-                {
-                    Proxy = proxy
-                };
-
-                var client = new HttpClient(httpClientHandler)
-                {
-                    Timeout = TimeSpan.FromMinutes(1)
-                };
-
-                client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgents[_random.Next(UserAgents.Count)]);
-
-                // Dispose old clients before clearing to prevent resource leaks
-                foreach (var oldClient in _httpClientByDate.Values)
-                {
-                    oldClient?.Dispose();
-                }
-
-                _httpClientByDate.Clear();
-                _httpClientByDate.TryAdd(now, client);
-
-                return client;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to reload configuration");
             }
             finally
             {
@@ -87,17 +127,236 @@ namespace AnalyzeDomains.Infrastructure.Services
             }
         }
 
+        public async Task<bool> IsConfigurationUpdatedAsync()
+        {
+            try
+            {
+                return await _minioConfigService.IsConfigurationUpdatedAsync(_lastConfigurationLoad);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to check if configuration is updated");
+                return false;
+            }
+        }
+
+        public async Task<SocksProxyConfiguration> GetCurrentConfigurationAsync()
+        {
+            await _semaphore.WaitAsync();
+            try
+            {
+                return _currentConfiguration;
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        public async Task<IEnumerable<SocksSettings>> GetHealthyProxiesAsync()
+        {
+            await _semaphore.WaitAsync();
+            try
+            {
+                return _currentConfiguration.Proxies.Where(p => p.IsHealthy).ToList();
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        private async Task LoadInitialConfigurationAsync()
+        {
+            try
+            {
+                _logger.LogInformation("Loading initial SOCKS configuration from MinIO...");
+                var configuration = await _minioConfigService.LoadConfigurationAsync();
+
+                await _semaphore.WaitAsync();
+                try
+                {
+                    _currentConfiguration = configuration;
+                    _lastConfigurationLoad = DateTime.UtcNow;
+                }
+                finally
+                {
+                    _semaphore.Release();
+                }
+
+                _logger.LogInformation("Initial configuration loaded with {ProxyCount} proxies", configuration.Proxies.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to load initial configuration");
+            }
+        }
+
+        private async void CheckConfigurationUpdate(object? state)
+        {
+            try
+            {
+                if (await IsConfigurationUpdatedAsync())
+                {
+                    _logger.LogInformation("Configuration update detected, reloading...");
+                    await ReloadConfigurationAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during configuration update check");
+            }
+        }
+
+        private async void PerformHealthChecks(object? state)
+        {
+            try
+            {
+                await _semaphore.WaitAsync();
+                var proxiesToCheck = _currentConfiguration.Proxies.ToList();
+                _semaphore.Release();
+
+                if (!proxiesToCheck.Any())
+                    return;
+
+                _logger.LogDebug("Performing health checks on {ProxyCount} proxies", proxiesToCheck.Count);
+
+                var healthCheckTasks = proxiesToCheck.Select(async proxy =>
+                {
+                    try
+                    {
+                        await CheckProxyHealthAsync(proxy);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Health check failed for proxy {Host}:{Port}", proxy.Host, proxy.Port);
+                        proxy.FailureCount++;
+                        proxy.IsHealthy = proxy.FailureCount < _currentConfiguration.MaxFailuresBeforeDisable;
+                    }
+                    finally
+                    {
+                        proxy.LastHealthCheck = DateTime.UtcNow;
+                    }
+                });
+
+                await Task.WhenAll(healthCheckTasks);
+
+                var healthyCount = proxiesToCheck.Count(p => p.IsHealthy);
+                _logger.LogDebug("Health check completed. {HealthyCount}/{TotalCount} proxies are healthy",
+                    healthyCount, proxiesToCheck.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during health check execution");
+            }
+        }
+
+        private async Task CheckProxyHealthAsync(SocksSettings proxy)
+        {
+            var clientKey = $"{proxy.Host}:{proxy.Port}:{proxy.UserName}";
+            var httpClient = _httpClientPool.GetOrAdd(clientKey, _ => CreateHttpClientWithProxy(proxy));
+
+            try
+            {
+                // Simple health check by making a request to a reliable endpoint
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(_currentConfiguration.ProxyTimeoutSeconds));
+                var response = await httpClient.GetAsync("https://httpbin.org/ip", cts.Token);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    proxy.FailureCount = 0;
+                    proxy.IsHealthy = true;
+                }
+                else
+                {
+                    proxy.FailureCount++;
+                    proxy.IsHealthy = proxy.FailureCount < _currentConfiguration.MaxFailuresBeforeDisable;
+                }
+            }
+            catch
+            {
+                proxy.FailureCount++;
+                proxy.IsHealthy = proxy.FailureCount < _currentConfiguration.MaxFailuresBeforeDisable;
+            }
+        }
+
+        private HttpClient CreateHttpClientWithProxy(SocksSettings socksSettings)
+        {
+            try
+            {
+                var proxy = new HttpToSocks5Proxy(socksSettings.Host, socksSettings.Port,
+                                                socksSettings.UserName, socksSettings.Password);
+
+                var httpClientHandler = new HttpClientHandler()
+                {
+                    Proxy = proxy,
+                    MaxConnectionsPerServer = 100,
+                    UseCookies = false,
+                    UseDefaultCredentials = false,
+                    PreAuthenticate = false
+                };
+
+                var client = new HttpClient(httpClientHandler)
+                {
+                    Timeout = TimeSpan.FromSeconds(_currentConfiguration.ProxyTimeoutSeconds)
+                };
+
+                client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgents[_random.Next(UserAgents.Count)]);
+                client.DefaultRequestHeaders.Connection.Add("keep-alive");
+                client.DefaultRequestHeaders.ConnectionClose = false;
+
+                _logger.LogDebug("Created HTTP client for proxy {Host}:{Port}", socksSettings.Host, socksSettings.Port);
+
+                return client;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to create HTTP client for proxy {Host}:{Port}", socksSettings.Host, socksSettings.Port);
+                throw;
+            }
+        }
+        private Task ClearUnusedHttpClientsAsync(SocksProxyConfiguration oldConfiguration)
+        {
+            var oldProxyKeys = oldConfiguration.Proxies
+                .Select(p => $"{p.Host}:{p.Port}:{p.UserName}")
+                .ToHashSet();
+
+            var currentProxyKeys = _currentConfiguration.Proxies
+                .Select(p => $"{p.Host}:{p.Port}:{p.UserName}")
+                .ToHashSet();
+
+            var keysToRemove = oldProxyKeys.Except(currentProxyKeys);
+
+            foreach (var key in keysToRemove)
+            {
+                if (_httpClientPool.TryRemove(key, out var client))
+                {
+                    client?.Dispose();
+                    _logger.LogDebug("Disposed unused HTTP client for proxy key: {Key}", key);
+                }
+            }
+
+            return Task.CompletedTask;
+        }
+
         public void Dispose()
         {
-            // Dispose all cached HttpClients
-            foreach (var client in _httpClientByDate.Values)
+            if (!_disposed)
             {
-                client?.Dispose();
-            }
-            _httpClientByDate.Clear();
+                _configurationCheckTimer?.Dispose();
+                _healthCheckTimer?.Dispose();
 
-            // Dispose the semaphore
-            _semaphore?.Dispose();
+                foreach (var client in _httpClientPool.Values)
+                {
+                    client?.Dispose();
+                }
+                _httpClientPool.Clear();
+
+                _semaphore?.Dispose();
+                _disposed = true;
+
+                _logger.LogInformation("SocksService disposed");
+            }
         }
     }
 }
