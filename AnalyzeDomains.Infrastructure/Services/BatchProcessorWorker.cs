@@ -133,7 +133,7 @@ namespace AnalyzeDomains.Infrastructure.Services
                     else
                     {
                         // No events available, wait before checking again
-                        await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+                        await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
                     }
                 }
 
