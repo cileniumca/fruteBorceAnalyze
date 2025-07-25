@@ -77,7 +77,8 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                 throw;
             }
         }
-    }    public bool TestConnection()
+    }
+    public bool TestConnection()
     {
         if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
 
@@ -195,27 +196,16 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         if (events == null || events.Count == 0) return;
 
         // Determine event type based on XML-RPC support (same for all events from same domain)
-<<<<<<< HEAD
-       
-=======
 
->>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
 
         // Create all events to publish
         var eventsToPublish = new List<BaseCompletedEvent>();
 
         foreach (var eventData in events)
-<<<<<<< HEAD
-        {          
-                // Add both XML-RPC and WP Login events for XML-RPC capable sites
-                eventsToPublish.Add(CreateCompletedEvent(eventData, EventType.XmlRpcCompleted));
-            
-=======
         {
             // Add both XML-RPC and WP Login events for XML-RPC capable sites
             eventsToPublish.Add(CreateCompletedEvent(eventData, EventType.XmlRpcCompleted));
 
->>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
         }
 
         if (eventsToPublish.Count > 0)
@@ -396,23 +386,14 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                             {
                                 _logger.LogWarning(ex, "Error disposing old RabbitMQ connection");
                             }
-<<<<<<< HEAD
-                        }                        _connection = _connectionFactory.CreateConnection();
-                        
-=======
                         }
                         _connection = _connectionFactory.CreateConnection();
 
->>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
                         // Add connection event handlers for proper channel pool management
                         _connection.ConnectionShutdown += OnConnectionShutdown;
                         _connection.ConnectionBlocked += OnConnectionBlocked;
                         _connection.ConnectionUnblocked += OnConnectionUnblocked;
-<<<<<<< HEAD
-                        
-=======
 
->>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
                         _logger.LogInformation("RabbitMQ connection established");
                     }
                     catch (Exception ex)
@@ -426,7 +407,8 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         }
 
         return _connection!;
-    }    private ConnectionFactory CreateConnectionFactory()
+    }
+    private ConnectionFactory CreateConnectionFactory()
     {
         return new ConnectionFactory
         {
@@ -436,24 +418,16 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             Password = _configuration.GetValue<string>("RabbitMQ:Password") ?? "guest",
             VirtualHost = _configuration.GetValue<string>("RabbitMQ:VirtualHost") ?? "/",
             AutomaticRecoveryEnabled = true,
-<<<<<<< HEAD
-            NetworkRecoveryInterval = TimeSpan.FromSeconds(10), // Slower recovery
-=======
             NetworkRecoveryInterval = TimeSpan.FromSeconds(5), // Faster recovery
->>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
             RequestedHeartbeat = TimeSpan.FromSeconds(60), // Longer heartbeats to prevent disconnections
             RequestedConnectionTimeout = TimeSpan.FromSeconds(30), // Longer timeout to prevent timeout exceptions
             // Additional settings for better performance and thread safety
             TopologyRecoveryEnabled = true,
             ContinuationTimeout = TimeSpan.FromSeconds(20), // Longer timeout
             HandshakeContinuationTimeout = TimeSpan.FromSeconds(10), // Longer timeout
-<<<<<<< HEAD
-            RequestedChannelMax = 5000 // Increased channel limit
-=======
             RequestedChannelMax = 5000, // Increased channel limit
             // Performance optimizations
             DispatchConsumersAsync = true // Enable async consumer dispatching
->>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
         };
     }// Connection event handlers for proper resource management
     private void OnConnectionShutdown(object? sender, ShutdownEventArgs e)
@@ -596,7 +570,8 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         }
 
         return consumedEvents;
-    }    private async Task<IModel> GetChannelAsync()
+    }
+    private async Task<IModel> GetChannelAsync()
     {
         await _channelSemaphore.WaitAsync();
 
@@ -609,11 +584,7 @@ public class RabbitMQService : IRabbitMQService, IDisposable
                 {
                     return pooledChannel;
                 }
-<<<<<<< HEAD
-                
-=======
 
->>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
                 // Channel is invalid - dispose it
                 try
                 {
@@ -628,22 +599,14 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             // Create new channel with validation
             var connection = GetConnection();
             var channel = connection.CreateModel();
-<<<<<<< HEAD
-            
-=======
 
->>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
             // Validate new channel before returning
             if (!IsChannelValid(channel))
             {
                 channel?.Dispose();
                 throw new InvalidOperationException("Created channel is not valid");
             }
-<<<<<<< HEAD
-            
-=======
 
->>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
             return channel;
         }
         catch
@@ -657,12 +620,8 @@ public class RabbitMQService : IRabbitMQService, IDisposable
     private static bool IsChannelValid(IModel? channel)
     {
         return channel != null && channel.IsOpen && !channel.IsClosed;
-<<<<<<< HEAD
-    }    private void ReturnChannel(IModel channel)
-=======
     }
     private void ReturnChannel(IModel channel)
->>>>>>> 9944afd5066f489756bf1735b46245bbc6e7d92a
     {
         try
         {
