@@ -18,11 +18,10 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
         public async Task<string> MainPageAnalyzeAsync(string url, CancellationToken cancellationToken = default)
         {
             _logger.LogInformation("Starting main page analysis for URL: {Url}", url);
-
             try
             {
-                using var handler = new HttpClientHandler { AllowAutoRedirect = false };
-                var client = await _socksService.GetHttpWithSocksConnection();
+                // Use balanced SOCKS connection for better load distribution
+                var client = await _socksService.GetHttpWithBalancedSocksConnection();
 
                 foreach (var scheme in new[] { "https", "http" })
                 {

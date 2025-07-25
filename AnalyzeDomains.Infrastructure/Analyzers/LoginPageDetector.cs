@@ -101,7 +101,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
             try
             {
                 var loginUrl = $"{baseUrl.TrimEnd('/')}{path}";
-                var client = await _socksService.GetHttpWithSocksConnection();
+                var client = await _socksService.GetHttpWithBalancedSocksConnection();
                 var response = await client.GetAsync(loginUrl, cancellationToken);
 
                 if (response.IsSuccessStatusCode)
@@ -164,15 +164,14 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
         private async Task<WordPressLoginPage?> CheckRedirectedLoginPage(string redirectUrl, string baseUrl, CancellationToken cancellationToken)
         {
             try
-            {
-                // Make the redirect URL absolute if it's relative
+            {                // Make the redirect URL absolute if it's relative
                 if (!Uri.IsWellFormedUriString(redirectUrl, UriKind.Absolute))
                 {
                     var baseUri = new Uri(baseUrl);
                     redirectUrl = new Uri(baseUri, redirectUrl).ToString();
                 }
 
-                var client = await _socksService.GetHttpWithSocksConnection();
+                var client = await _socksService.GetHttpWithBalancedSocksConnection();
                 var response = await client.GetAsync(redirectUrl, cancellationToken);
 
                 if (response.IsSuccessStatusCode)
@@ -295,7 +294,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
 
             try
             {
-                var client = await _socksService.GetHttpWithSocksConnection();
+                var client = await _socksService.GetHttpWithBalancedSocksConnection();
                 var response = await client.GetAsync(url, cancellationToken);
 
                 if (response.IsSuccessStatusCode)
@@ -342,15 +341,13 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
 
             return loginPages;
         }
-
         private async Task<List<WordPressLoginPage>> FindLoginPathsInRobots(string url, CancellationToken cancellationToken)
         {
             var loginPages = new List<WordPressLoginPage>();
-
             try
             {
                 var robotsUrl = $"{url.TrimEnd('/')}/robots.txt";
-                var client = await _socksService.GetHttpWithSocksConnection();
+                var client = await _socksService.GetHttpWithBalancedSocksConnection();
                 var response = await client.GetAsync(robotsUrl, cancellationToken);
 
                 if (response.IsSuccessStatusCode)

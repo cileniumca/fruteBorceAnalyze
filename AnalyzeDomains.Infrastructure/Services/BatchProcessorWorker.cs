@@ -23,7 +23,7 @@ namespace AnalyzeDomains.Infrastructure.Services
         }
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            var maxParallelism = 64;
+            var maxParallelism = 64; 
             if (maxParallelism < 1)
                 maxParallelism = 1;
 
@@ -48,90 +48,87 @@ namespace AnalyzeDomains.Infrastructure.Services
                     // Consume events from the queue instead of reading from database
                     var domainsToValidate = await _rabbitMQService.ConsumeAnalyzeEventsAsync(64, stoppingToken);
                     domainsList = domainsToValidate.ToList();
-
                     if (domainsList.Count > 0)
                     {
-                        var semaphore = new SemaphoreSlim(maxParallelism);
-                        var tasks = new List<Task>();
-
-                        foreach (var domain in domainsList)
+                        var parallelOptions = new ParallelOptions
                         {
-                            tasks.Add(Task.Run(async () => {
-                                await semaphore.WaitAsync(stoppingToken); // Wait inside task
-                                try {
-                                    var isSuccess = false;
-                                    try
-                                    {
-                                        var fullDomain = await mainDomainAnalyzer.MainPageAnalyzeAsync(domain.Domain, stoppingToken);
-                                        if (string.IsNullOrEmpty(fullDomain))
-                                        {
-                                            publicSitesToDeactivate.Add(domain.SiteId);
-                                            return;
-                                        }
+                            MaxDegreeOfParallelism = maxParallelism,
+                            CancellationToken = stoppingToken
+                        };
 
-                                        var loginPage = await loginPageDetector.DetectLoginPagesAsync(fullDomain, stoppingToken);
-                                        //if (loginPage.Count == 0)
-                                        //{
-                                        //    publicSitesToDeactivate.Add(domain.SiteId);
-                                        //    return;
-                                        //}
-
-                                        var versionInfo = await versionAnalyzer.DetectVersionAsync(fullDomain, DetectionMode.Mixed, ConfidenceLevel.Medium, stoppingToken);
-                                        var users = await userDetector.EnumerateUsersAsync(fullDomain, DetectionMode.Mixed, 20, stoppingToken);
-
-                                        if (users.Count == 0)
-                                        {
-                                            publicSitesToDeactivate.Add(domain.SiteId);
-                                            return;
-                                        }                                    // Try to add site and users to database, but continue with event publishing regardless
-                                        try
-                                        {
-                                            await dataBaseService.AddSiteWithUsers(
-                                                domain,
-                                                loginPage,
-                                                versionInfo ?? new Domain.Models.WordPressVersion(),
-                                                users,
-                                                fullDomain,
-                                                stoppingToken
-                                            );
-                                        }
-                                        catch (Exception dbEx)
-                                        {
-                                            // Log database error but continue with event publishing
-                                            // This could happen if site/users already exist in database
-                                            Console.WriteLine($"Database insertion failed for domain {fullDomain}: {dbEx.Message}");
-                                        }                                        // Publish events regardless of database operation success
-                                        var mainLoginPageUrl = loginPage.Where(x => x.MainLoginPage == true).Select(xx => xx.Url).FirstOrDefault() ?? string.Empty;
-                                        var batchEvents = users.Select(user => new CompletedEvent
-                                        {
-                                            Login = user.Username,
-                                            FullUrl = fullDomain,
-                                            LoginPage = mainLoginPageUrl,
-                                            SiteId = domain.SiteId
-                                        }).ToList();
-                                        
-                                        await _rabbitMQService.PublishBatchCompletedEventsAsync(batchEvents, users, stoppingToken);
-
-                                        isSuccess = true;
-                                    }
-                                    catch (Exception)
-                                    {
-                                        // Log error if needed
-                                    }
-                                    finally
-                                    {
-                                        if (isSuccess)
-                                            Interlocked.Increment(ref successfulAnalyses);
-                                        else
-                                            Interlocked.Increment(ref failedAnalyses);
-                                    }
+                        await Parallel.ForEachAsync(domainsList, parallelOptions, async (domain, ct) =>
+                        {
+                            var isSuccess = false;
+                            try
+                            {
+                                var fullDomain = await mainDomainAnalyzer.MainPageAnalyzeAsync(domain.Domain, ct);
+                                if (string.IsNullOrEmpty(fullDomain))
+                                {
+                                    publicSitesToDeactivate.Add(domain.SiteId);
+                                    return;
                                 }
-                                finally {
-                                    semaphore.Release();
+
+                                var loginPage = await loginPageDetector.DetectLoginPagesAsync(fullDomain, ct);
+                                //if (loginPage.Count == 0)
+                                //{
+                                //    publicSitesToDeactivate.Add(domain.SiteId);
+                                //    return;
+                                //}
+
+                                var versionInfo = await versionAnalyzer.DetectVersionAsync(fullDomain, DetectionMode.Mixed, ConfidenceLevel.Medium, ct);
+                                var users = await userDetector.EnumerateUsersAsync(fullDomain, DetectionMode.Mixed, 20, ct);
+
+                                if (users.Count == 0)
+                                {
+                                    publicSitesToDeactivate.Add(domain.SiteId);
+                                    return;
                                 }
-                            }, stoppingToken));
-                        }
-                        await Task.WhenAll(tasks);
+
+                                // Try to add site and users to database, but continue with event publishing regardless
+                                try
+                                {
+                                    await dataBaseService.AddSiteWithUsers(
+                                        domain,
+                                        loginPage,
+                                        versionInfo ?? new Domain.Models.WordPressVersion(),
+                                        users,
+                                        fullDomain,
+                                        ct
+                                    );
+                                }
+                                catch (Exception dbEx)
+                                {
+                                    // Log database error but continue with event publishing
+                                    // This could happen if site/users already exist in database
+                                    Console.WriteLine($"Database insertion failed for domain {fullDomain}: {dbEx.Message}");
+                                }
+
+                                // Publish events regardless of database operation success
+                                var mainLoginPageUrl = loginPage.Where(x => x.MainLoginPage == true).Select(xx => xx.Url).FirstOrDefault() ?? string.Empty;
+                                var batchEvents = users.Select(user => new CompletedEvent
+                                {
+                                    Login = user.Username,
+                                    FullUrl = fullDomain,
+                                    LoginPage = mainLoginPageUrl,
+                                    SiteId = domain.SiteId
+                                }).ToList();
+
+                                await _rabbitMQService.PublishBatchCompletedEventsAsync(batchEvents, users, ct);
+
+                                isSuccess = true;
+                            }
+                            catch (Exception)
+                            {
+                                // Log error if needed
+                            }
+                            finally
+                            {
+                                if (isSuccess)
+                                    Interlocked.Increment(ref successfulAnalyses);
+                                else
+                                    Interlocked.Increment(ref failedAnalyses);
+                            }
+                        });
                     }
                     else
                     {

@@ -1,0 +1,25 @@
+{
+  "proxies": [
+    {
+      "host": "185.203.5.17",
+      "port": 42567,
+      "userName": "user4341075",
+      "password": "EMv5CRcVkZ"
+    },
+    {
+      "host": "171.22.126.145", 
+      "port": 42567,
+      "userName": "user4345118",
+      "password": "aDrIPvOwHe"
+    },
+    {
+      "host": "185.203.5.114",
+      "port": 42567,
+      "userName": "user4345112",
+      "password": "5GgaJMhz2J"
+    }
+  ],
+  "healthCheckIntervalMinutes": 5,
+  "maxFailuresBeforeDisable": 3,
+  "proxyTimeoutSeconds": 30
+}

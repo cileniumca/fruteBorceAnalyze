@@ -143,7 +143,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
         {
             try
             {
-                var client = await _socksService.GetHttpWithSocksConnection();
+                var client = await _socksService.GetHttpWithBalancedSocksConnection();
 
                 var response = await client.GetAsync(url, cancellationToken);
                 if (!response.IsSuccessStatusCode)
@@ -178,7 +178,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
         {
             try
             {
-                var client = await _socksService.GetHttpWithSocksConnection();
+                var client = await _socksService.GetHttpWithBalancedSocksConnection();
                 var readmeUrl = $"{url.TrimEnd('/')}/readme.html";
                 var response = await client.GetAsync(readmeUrl, cancellationToken);
                 if (!response.IsSuccessStatusCode)
@@ -210,11 +210,9 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
 
         private async Task<List<WordPressVersion>> DetectFromAssets(string url, CancellationToken cancellationToken)
         {
-            var versions = new List<WordPressVersion>();
-
-            try
+            var versions = new List<WordPressVersion>(); try
             {
-                var client = await _socksService.GetHttpWithSocksConnection();
+                var client = await _socksService.GetHttpWithBalancedSocksConnection();
                 var response = await client.GetAsync(url, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                     return versions;
@@ -261,7 +259,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
         {
             try
             {
-                var client = await _socksService.GetHttpWithSocksConnection();
+                var client = await _socksService.GetHttpWithBalancedSocksConnection();
                 var versionUrl = $"{url.TrimEnd('/')}/wp-includes/version.php";
                 var response = await client.GetAsync(versionUrl, cancellationToken);
                 if (!response.IsSuccessStatusCode)
@@ -295,7 +293,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
         {
             var versions = new List<WordPressVersion>();
             var commonThemes = new[] { "twentyten", "twentyeleven", "twentytwelve", "twentythirteen", "twentyfourteen", "twentyfifteen", "twentysixteen", "twentyseventeen", "twentynineteen", "twentytwenty", "twentytwentyone", "twentytwentytwo", "twentytwentythree", "twentytwentyfour", "twentytwentyfive" };
-            var client = await _socksService.GetHttpWithSocksConnection();
+            var client = await _socksService.GetHttpWithBalancedSocksConnection();
             foreach (var theme in commonThemes)
             {
                 try

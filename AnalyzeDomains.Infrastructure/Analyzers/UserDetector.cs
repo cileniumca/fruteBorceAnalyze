@@ -91,7 +91,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
             {
                 var apiUrl = $"{url.TrimEnd('/')}/wp-json/wp/v2/users";
                 _logger.LogDebug("Attempting user enumeration via WP-JSON API: {ApiUrl}", apiUrl);
-                var client = await _socksService.GetHttpWithSocksConnection();
+                var client = await _socksService.GetHttpWithBalancedSocksConnection();
 
                 var response = await client.GetAsync(apiUrl, cancellationToken);
                 if (!response.IsSuccessStatusCode)
@@ -143,8 +143,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
 
             try
             {
-                _logger.LogDebug("Attempting user enumeration via author archives");
-                var client = await _socksService.GetHttpWithSocksConnection();
+                _logger.LogDebug("Attempting user enumeration via author archives"); var client = await _socksService.GetHttpWithBalancedSocksConnection();
                 for (int userId = 1; userId <= Math.Min(maxUsers * 2, 100); userId++)
                 {
                     if (users.Count >= maxUsers)
@@ -192,7 +191,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
         private async Task<List<WordPressUser>> EnumerateViaXmlRpc(string url, int maxUsers, CancellationToken cancellationToken)
         {
             var users = new List<WordPressUser>();
-            var client = await _socksService.GetHttpWithSocksConnection();
+            var client = await _socksService.GetHttpWithBalancedSocksConnection();
             try
             {
                 var xmlRpcUrl = $"{url.TrimEnd('/')}/xmlrpc.php";
@@ -236,11 +235,10 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
 
             return users;
         }
-
         private async Task<List<WordPressUser>> EnumerateViaLoginRedirect(string url, int maxUsers, CancellationToken cancellationToken)
         {
             var users = new List<WordPressUser>();
-            var client = await _socksService.GetHttpWithSocksConnection();
+            var client = await _socksService.GetHttpWithBalancedSocksConnection();
             try
             {
                 var loginUrl = $"{url.TrimEnd('/')}/wp-login.php";
@@ -318,10 +316,9 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
 
             return null;
         }
-
         private async Task<bool> CheckUsernameViaXmlRpc(string xmlRpcUrl, string username, CancellationToken cancellationToken)
         {
-            var client = await _socksService.GetHttpWithSocksConnection();
+            var client = await _socksService.GetHttpWithBalancedSocksConnection();
             try
             {
                 var xmlRequest = $@"<?xml version=""1.0""?>
