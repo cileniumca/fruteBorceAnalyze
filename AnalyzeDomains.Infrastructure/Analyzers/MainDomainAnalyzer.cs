@@ -40,7 +40,7 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
                     {
                         if (ex.Message.ToLower().Contains("proxy"))
                         {
-                            _logger.LogError("PROXT ERROR!!!!");
+                            _logger.LogError("PROXY ERROR!!!!");
                             Thread.Sleep(TimeSpan.FromHours(20));
                         }
                         continue;
