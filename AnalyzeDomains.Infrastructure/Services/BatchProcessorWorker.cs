@@ -2,6 +2,8 @@
 using AnalyzeDomains.Domain.Interfaces.Analyzers;
 using AnalyzeDomains.Domain.Interfaces.Services;
 using AnalyzeDomains.Domain.Models;
+using AnalyzeDomains.Domain.Models.AnalyzeModels;
+using AnalyzeDomains.Domain.Models.Events;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -23,7 +25,7 @@ namespace AnalyzeDomains.Infrastructure.Services
         }
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            var maxParallelism = 64; 
+            var maxParallelism = 64;
             if (maxParallelism < 1)
                 maxParallelism = 1;
 
@@ -45,6 +47,10 @@ namespace AnalyzeDomains.Infrastructure.Services
                     var userDetector = scope.ServiceProvider.GetRequiredService<IUserDetector>();
                     var mainDomainAnalyzer = scope.ServiceProvider.GetRequiredService<IMainDomainAnalyzer>();
 
+                    var securityAnalyzer = scope.ServiceProvider.GetRequiredService<ISecurityAnalyzer>();
+                    var pluginAnalyzer = scope.ServiceProvider.GetRequiredService<IPluginDetector>();
+                    var themAnalyzer = scope.ServiceProvider.GetRequiredService<IThemeDetector>();
+                    var dbDumpAnalyzer = scope.ServiceProvider.GetRequiredService<IDbExportDetector>();
                     // Consume events from the queue instead of reading from database
                     var domainsToValidate = await _rabbitMQService.ConsumeAnalyzeEventsAsync(64, stoppingToken);
                     domainsList = domainsToValidate.ToList();
@@ -69,11 +75,7 @@ namespace AnalyzeDomains.Infrastructure.Services
                                 }
 
                                 var loginPage = await loginPageDetector.DetectLoginPagesAsync(fullDomain, ct);
-                                //if (loginPage.Count == 0)
-                                //{
-                                //    publicSitesToDeactivate.Add(domain.SiteId);
-                                //    return;
-                                //}
+
 
                                 var versionInfo = await versionAnalyzer.DetectVersionAsync(fullDomain, DetectionMode.Mixed, ConfidenceLevel.Medium, ct);
                                 var users = await userDetector.EnumerateUsersAsync(fullDomain, DetectionMode.Mixed, 20, ct);
@@ -83,14 +85,18 @@ namespace AnalyzeDomains.Infrastructure.Services
                                     publicSitesToDeactivate.Add(domain.SiteId);
                                     return;
                                 }
-
+                                var dbData = await dbDumpAnalyzer.DetectDbExportsAsync(fullDomain, ct);
+                                var securityData = await securityAnalyzer.AnalyzeSecurityAsync(fullDomain, ct);
+                                var pluginData = await pluginAnalyzer.DetectPluginsAsync(fullDomain, mode: DetectionMode.Mixed, ct);
+                                var themData = await themAnalyzer.DetectActiveThemeAsync(fullDomain, ct);
+                               
                                 // Try to add site and users to database, but continue with event publishing regardless
                                 try
                                 {
                                     await dataBaseService.AddSiteWithUsers(
                                         domain,
                                         loginPage,
-                                        versionInfo ?? new Domain.Models.WordPressVersion(),
+                                        versionInfo ?? new WordPressVersion(),
                                         users,
                                         fullDomain,
                                         ct
@@ -152,10 +158,8 @@ namespace AnalyzeDomains.Infrastructure.Services
 
 
 // repush events
-//using AnalyzeDomains.Domain.Enums;
 //using AnalyzeDomains.Domain.Interfaces.Analyzers;
 //using AnalyzeDomains.Domain.Interfaces.Services;
-//using AnalyzeDomains.Domain.Models;
 //using Microsoft.Extensions.Configuration;
 //using Microsoft.Extensions.DependencyInjection;
 //using Microsoft.Extensions.Hosting;
@@ -177,7 +181,7 @@ namespace AnalyzeDomains.Infrastructure.Services
 //        }
 //        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 //        {
-//            var maxParallelism = Environment.ProcessorCount * 50;
+//            var maxParallelism = 1;
 //            if (maxParallelism < 1)
 //                maxParallelism = 1;
 
@@ -203,14 +207,14 @@ namespace AnalyzeDomains.Infrastructure.Services
 //                    var getUserInfoForQueue = await dataBaseService.ReadUserInfoForEvents(stoppingToken);
 //                    getUserInfoForQueue = getUserInfoForQueue.OrderBy(x => x.SiteId).ToList();
 //                    // Split events into chunks
-//                    const int chunkSize = 128;
+//                    const int chunkSize = 1000;
 //                    var eventChunks = getUserInfoForQueue
 //                        .Select((evt, idx) => new { evt, idx })
 //                        .GroupBy(x => x.idx / chunkSize)
 //                        .Select(g => g.Select(x => x.evt).ToList())
 //                        .ToList();
 
-//                    var semaphore = new SemaphoreSlim(50);
+//                    var semaphore = new SemaphoreSlim(10);
 //                    var tasks = new List<Task>();
 
 //                    foreach (var chunk in eventChunks)
@@ -220,10 +224,7 @@ namespace AnalyzeDomains.Infrastructure.Services
 //                        {
 //                            try
 //                            {
-//                                foreach (var userEvent in chunk)
-//                                {
-//                                    await _rabbitMQService.PublishBatchCompletedEventAsync(userEvent, stoppingToken);
-//                                }
+//                                await _rabbitMQService.PublishCompletedEventsBatchAsync(chunk, stoppingToken);
 //                            }
 //                            finally
 //                            {

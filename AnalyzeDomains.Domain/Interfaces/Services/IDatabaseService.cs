@@ -1,4 +1,6 @@
 ﻿using AnalyzeDomains.Domain.Models;
+using AnalyzeDomains.Domain.Models.AnalyzeModels;
+using AnalyzeDomains.Domain.Models.Events;
 
 namespace AnalyzeDomains.Domain.Interfaces.Services
 {

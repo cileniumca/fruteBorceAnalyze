@@ -1,7 +1,7 @@
 ﻿using AnalyzeDomains.Domain.Enums;
 using AnalyzeDomains.Domain.Interfaces.Analyzers;
 using AnalyzeDomains.Domain.Interfaces.Services;
-using AnalyzeDomains.Domain.Models;
+using AnalyzeDomains.Domain.Models.AnalyzeModels;
 using Microsoft.Extensions.Logging;
 using System.Text.RegularExpressions;
 

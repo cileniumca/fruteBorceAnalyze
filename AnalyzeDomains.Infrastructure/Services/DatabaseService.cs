@@ -1,5 +1,7 @@
 ﻿using AnalyzeDomains.Domain.Interfaces.Services;
 using AnalyzeDomains.Domain.Models;
+using AnalyzeDomains.Domain.Models.AnalyzeModels;
+using AnalyzeDomains.Domain.Models.Events;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
@@ -177,7 +179,7 @@ namespace AnalyzeDomains.Infrastructure.Services
             new NpgsqlParameter("@username", string.Empty),
             new NpgsqlParameter("@password", string.Empty),
             new NpgsqlParameter("@add_info", JsonConvert.SerializeObject(wordPressLoginPages)),
-            new NpgsqlParameter("@version", version.Version),
+            new NpgsqlParameter("@version", version.Version== null ? 0 : version.Version),
             new NpgsqlParameter("@user_found", wordPressUser.Count > 0)
         });
 

@@ -1,4 +1,4 @@
-﻿namespace AnalyzeDomains.Domain.Models
+﻿namespace AnalyzeDomains.Domain.Models.Events
 {
     public class AnalyzeEvent
     {

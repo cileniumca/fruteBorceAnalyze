@@ -17,6 +17,12 @@ namespace AnalyzeDomains.Infrastructure
             services.AddScoped<IMainDomainAnalyzer, MainDomainAnalyzer>();
             services.AddScoped<IVersionAnalyzer, VersionAnalyzer>();
             services.AddScoped<IUserDetector, UserDetector>();
+
+            services.AddScoped<ISecurityAnalyzer, SecurityAnalyzer>();
+            services.AddScoped<IPluginDetector, PluginDetector>();
+            services.AddScoped<IThemeDetector, ThemeDetector>();
+            services.AddScoped<IDbExportDetector, DbExportDetector>();
+
             services.AddSingleton<IRabbitMQService, RabbitMQService>();            // Configure MinIO settings
             services.Configure<MinioSettings>(configuration.GetSection("MinioSettings"));
 

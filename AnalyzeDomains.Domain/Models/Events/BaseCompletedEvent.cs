@@ -1,6 +1,6 @@
 using AnalyzeDomains.Domain.Enums;
 
-namespace AnalyzeDomains.Domain.Models;
+namespace AnalyzeDomains.Domain.Models.Events;
 
 public abstract class BaseCompletedEvent
 {

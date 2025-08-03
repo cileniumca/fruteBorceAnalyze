@@ -1,6 +1,8 @@
 using AnalyzeDomains.Domain.Enums;
 using AnalyzeDomains.Domain.Interfaces.Services;
 using AnalyzeDomains.Domain.Models;
+using AnalyzeDomains.Domain.Models.AnalyzeModels;
+using AnalyzeDomains.Domain.Models.Events;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
@@ -38,7 +40,7 @@ public class RabbitMQService : IRabbitMQService, IDisposable
     {
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _batchCompletedQueueName = _configuration.GetValue<string>("RabbitMQ:BatchCompletedQueueName") ?? "batch-processing-completed";
+        _batchCompletedQueueName = _configuration.GetValue<string>("RabbitMQ:BatchCompletedQueueName") ?? "xmlRPCQueue";
         _completedEventsQueueName = _configuration.GetValue<string>("RabbitMQ:CompletedEventsQueueName") ?? "xmlRPCQueue";
         _analyzeEvent = "analyzeQueue";
         _connectionFactory = CreateConnectionFactory();
@@ -123,6 +125,43 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         await PublishEventAsync(eventData, _analyzeEvent, cancellationToken);
         _logger.LogInformation("Published analyze event");
     }
+    public async Task PublishCompletedEventsBatchAsync(IEnumerable<CompletedEvent> events, CancellationToken cancellationToken = default)
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));
+        if (events == null) throw new ArgumentNullException(nameof(events));
+
+        var eventsList = events.ToList();
+        if (eventsList.Count == 0) return;
+
+        const int maxRetries = 3;
+        var retryDelay = TimeSpan.FromSeconds(1);
+
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                await PublishBatchInternalAsync(eventsList, _completedEventsQueueName);
+                _logger.LogDebug("Published batch of {EventCount} analyze events on attempt {Attempt}",
+                    eventsList.Count, attempt);
+                return; // Success, exit retry loop
+            }
+            catch (Exception ex) when (attempt < maxRetries && IsRetryableException(ex))
+            {
+                _logger.LogWarning(ex, "Failed to publish batch of {EventCount} analyze events on attempt {Attempt}. Retrying in {Delay}ms",
+                    eventsList.Count, attempt, retryDelay.TotalMilliseconds);
+
+                await Task.Delay(retryDelay, cancellationToken);
+                retryDelay = TimeSpan.FromMilliseconds(retryDelay.TotalMilliseconds * 2); // Exponential backoff
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to publish batch of {EventCount} analyze events after {Attempts} attempts",
+                    eventsList.Count, attempt);
+                throw;
+            }
+        }
+    }
+
     public async Task PublishAnalyzeEventsBatchAsync(IEnumerable<AnalyzeEvent> events, CancellationToken cancellationToken = default)
     {
         if (_disposed) throw new ObjectDisposedException(nameof(RabbitMQService));

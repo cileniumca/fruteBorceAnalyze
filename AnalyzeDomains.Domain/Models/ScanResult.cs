@@ -1,4 +1,6 @@
-﻿namespace AnalyzeDomains.Domain.Models
+﻿using AnalyzeDomains.Domain.Models.AnalyzeModels;
+
+namespace AnalyzeDomains.Domain.Models
 {
     public class ScanResult
     {
