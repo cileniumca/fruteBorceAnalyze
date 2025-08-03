@@ -36,8 +36,13 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
                             return redirectUrl ?? fullUrl;
                         }
                     }
-                    catch
+                    catch (Exception ex)
                     {
+                        if (ex.Message.ToLower().Contains("proxy"))
+                        {
+                            _logger.LogError("PROXY ERROR!!!!");
+                            Thread.Sleep(TimeSpan.FromHours(20));
+                        }
                         continue;
                     }
 
