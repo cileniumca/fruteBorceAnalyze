@@ -52,7 +52,7 @@ namespace AnalyzeDomains.Infrastructure.Services
                     var themAnalyzer = scope.ServiceProvider.GetRequiredService<IThemeDetector>();
                     var dbDumpAnalyzer = scope.ServiceProvider.GetRequiredService<IDbExportDetector>();
                     // Consume events from the queue instead of reading from database
-                    var domainsToValidate = await _rabbitMQService.ConsumeAnalyzeEventsAsync(1, stoppingToken);
+                    var domainsToValidate = await _rabbitMQService.ConsumeAnalyzeEventsAsync(64, stoppingToken);
                     domainsList = domainsToValidate.ToList();
                     if (domainsList.Count > 0)
                     {
