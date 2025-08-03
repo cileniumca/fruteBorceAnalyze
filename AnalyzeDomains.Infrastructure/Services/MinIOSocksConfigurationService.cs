@@ -121,7 +121,7 @@ namespace AnalyzeDomains.Infrastructure.Services
                 Proxies = new List<SocksSettings>(),
                 HealthCheckIntervalMinutes = 5,
                 MaxFailuresBeforeDisable = 3,
-                ProxyTimeoutSeconds = 60
+                ProxyTimeoutSeconds = 10
             };
         }
 

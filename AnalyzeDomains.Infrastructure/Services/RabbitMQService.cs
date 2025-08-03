@@ -459,7 +459,7 @@ public class RabbitMQService : IRabbitMQService, IDisposable
             AutomaticRecoveryEnabled = true,
             NetworkRecoveryInterval = TimeSpan.FromSeconds(5), // Faster recovery
             RequestedHeartbeat = TimeSpan.FromSeconds(60), // Longer heartbeats to prevent disconnections
-            RequestedConnectionTimeout = TimeSpan.FromSeconds(30), // Longer timeout to prevent timeout exceptions
+            RequestedConnectionTimeout = TimeSpan.FromSeconds(10), // Longer timeout to prevent timeout exceptions
             // Additional settings for better performance and thread safety
             TopologyRecoveryEnabled = true,
             ContinuationTimeout = TimeSpan.FromSeconds(20), // Longer timeout

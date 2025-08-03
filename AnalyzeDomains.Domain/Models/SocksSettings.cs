@@ -17,6 +17,6 @@
         public List<SocksSettings> Proxies { get; set; } = new List<SocksSettings>();
         public int HealthCheckIntervalMinutes { get; set; } = 5;
         public int MaxFailuresBeforeDisable { get; set; } = 3;
-        public int ProxyTimeoutSeconds { get; set; } = 30;
+        public int ProxyTimeoutSeconds { get; set; } = 10;
     }
 }

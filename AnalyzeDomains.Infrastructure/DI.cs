@@ -40,7 +40,7 @@ namespace AnalyzeDomains.Infrastructure
             // Add optimized HTTP client configuration
             services.AddHttpClient("OptimizedHttpClient", client =>
             {
-                client.Timeout = TimeSpan.FromSeconds(30);
+                client.Timeout = TimeSpan.FromSeconds(10);
                 client.DefaultRequestHeaders.Connection.Add("keep-alive");
                 client.DefaultRequestHeaders.ConnectionClose = false;
             }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler

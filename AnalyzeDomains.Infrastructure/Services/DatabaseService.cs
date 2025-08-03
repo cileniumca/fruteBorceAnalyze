@@ -143,8 +143,7 @@ namespace AnalyzeDomains.Infrastructure.Services
                 throw;
             }
         }
-
-        public async Task AddSiteWithUsers(
+        public async Task<int> AddSiteWithUsers(
     SiteInfo siteInfo,
     List<WordPressLoginPage> wordPressLoginPages,
     WordPressVersion version,
@@ -182,8 +181,7 @@ namespace AnalyzeDomains.Infrastructure.Services
             new NpgsqlParameter("@version", version.Version== null ? 0 : version.Version),
             new NpgsqlParameter("@user_found", wordPressUser.Count > 0)
         });
-
-                var siteId = (int)await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                var siteId = (int)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? 0);
 
 
                 const string insertUserCommand = @"
@@ -204,11 +202,175 @@ namespace AnalyzeDomains.Infrastructure.Services
             });
                     await userCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
-
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return siteId;
+            }
+            catch (PostgresException ex) when (ex.SqlState == "23505") // Unique constraint violation
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                // Site already exists, find and return the existing site ID
+                const string selectExistingSiteCommand = @"
+                    SELECT id FROM public.checked_sites 
+                    WHERE domain = @domain";
+
+                await using var selectCommand = new NpgsqlCommand(selectExistingSiteCommand, connection);
+                selectCommand.Parameters.Add(new NpgsqlParameter("@domain", fullDomain));
+
+                var existingSiteId = await selectCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                if (existingSiteId != null)
+                {
+                    _logger.LogInformation("Site already exists for domain {Domain}, returning existing site ID {SiteId}",
+                        fullDomain, existingSiteId);
+                    return (int)existingSiteId;
+                }
+
+                // If we couldn't find the existing site, throw the original exception
+                throw;
             }
             catch
             {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                throw;
+            }
+        }
+
+        public async Task InsertSiteDumpInfoAsync(int siteId, List<DbExport> dbExports, CancellationToken cancellationToken = default)
+        {
+            if (!dbExports.Any()) return;
+
+            await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                const string insertCommand = @"
+                    INSERT INTO public.site_dump_info(site_id, dump_url)
+                    VALUES (@site_id, @dump_url);";
+
+                foreach (var dbExport in dbExports)
+                {
+                    await using var command = new NpgsqlCommand(insertCommand, connection, transaction);
+                    command.Parameters.AddRange(new[]
+                    {
+                        new NpgsqlParameter("@site_id", siteId),
+                        new NpgsqlParameter("@dump_url", dbExport.Url)
+                    });
+                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error inserting site dump info for site ID {SiteId}", siteId);
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                throw;
+            }
+        }
+        public async Task InsertSiteFilesInfoAsync(int siteId, List<SecurityFinding> securityFindings, CancellationToken cancellationToken = default)
+        {
+            if (!securityFindings.Any()) return;
+
+            await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                const string insertCommand = @"
+                    INSERT INTO public.site_files_info(site_id, url, name, type, description, severity, details, discovered_at)
+                    VALUES (@site_id, @url, @name, @type, @description, @severity, @details, @discovered_at);";
+
+                foreach (var finding in securityFindings)
+                {
+                    await using var command = new NpgsqlCommand(insertCommand, connection, transaction);
+                    command.Parameters.AddRange(new[]
+                    {
+                        new NpgsqlParameter("@site_id", siteId),
+                        new NpgsqlParameter("@url", finding.Url),
+                        new NpgsqlParameter("@name", finding.Type), // Using Type as name for backward compatibility
+                        new NpgsqlParameter("@type", finding.Type),
+                        new NpgsqlParameter("@description", finding.Description),
+                        new NpgsqlParameter("@severity", finding.Severity.ToString()),
+                        new NpgsqlParameter("@details", finding.Details),
+                        new NpgsqlParameter("@discovered_at", finding.DiscoveredAt)
+                    });
+                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error inserting site files info for site ID {SiteId}", siteId);
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                throw;
+            }
+        }
+
+        public async Task InsertSitePluginsAsync(int siteId, List<Plugin> plugins, CancellationToken cancellationToken = default)
+        {
+            if (!plugins.Any()) return;
+
+            await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                const string insertCommand = @"
+                    INSERT INTO public.site_plugin(site_id, name)
+                    VALUES (@site_id, @name);";
+
+                foreach (var plugin in plugins)
+                {
+                    await using var command = new NpgsqlCommand(insertCommand, connection, transaction);
+                    command.Parameters.AddRange(new[]
+                    {
+                        new NpgsqlParameter("@site_id", siteId),
+                        new NpgsqlParameter("@name", plugin.Name)
+                    });
+                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error inserting site plugins for site ID {SiteId}", siteId);
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                throw;
+            }
+        }
+
+        public async Task InsertSiteThemesAsync(int siteId, List<Theme> themes, CancellationToken cancellationToken = default)
+        {
+            if (!themes.Any()) return;
+
+            await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                const string insertCommand = @"
+                    INSERT INTO public.site_theme(site_id, name)
+                    VALUES (@site_id, @name);";
+
+                foreach (var theme in themes)
+                {
+                    await using var command = new NpgsqlCommand(insertCommand, connection, transaction);
+                    command.Parameters.AddRange(new[]
+                    {
+                        new NpgsqlParameter("@site_id", siteId),
+                        new NpgsqlParameter("@name", theme.Name)
+                    });
+                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error inserting site themes for site ID {SiteId}", siteId);
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
                 throw;
             }

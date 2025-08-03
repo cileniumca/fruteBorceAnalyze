@@ -52,7 +52,7 @@ namespace AnalyzeDomains.Infrastructure.Services
                     var themAnalyzer = scope.ServiceProvider.GetRequiredService<IThemeDetector>();
                     var dbDumpAnalyzer = scope.ServiceProvider.GetRequiredService<IDbExportDetector>();
                     // Consume events from the queue instead of reading from database
-                    var domainsToValidate = await _rabbitMQService.ConsumeAnalyzeEventsAsync(64, stoppingToken);
+                    var domainsToValidate = await _rabbitMQService.ConsumeAnalyzeEventsAsync(1, stoppingToken);
                     domainsList = domainsToValidate.ToList();
                     if (domainsList.Count > 0)
                     {
@@ -89,11 +89,11 @@ namespace AnalyzeDomains.Infrastructure.Services
                                 var securityData = await securityAnalyzer.AnalyzeSecurityAsync(fullDomain, ct);
                                 var pluginData = await pluginAnalyzer.DetectPluginsAsync(fullDomain, mode: DetectionMode.Mixed, ct);
                                 var themData = await themAnalyzer.DetectActiveThemeAsync(fullDomain, ct);
-                               
+                                var siteId = 0;
                                 // Try to add site and users to database, but continue with event publishing regardless
                                 try
                                 {
-                                    await dataBaseService.AddSiteWithUsers(
+                                    siteId =  await dataBaseService.AddSiteWithUsers(
                                         domain,
                                         loginPage,
                                         versionInfo ?? new WordPressVersion(),
@@ -104,9 +104,40 @@ namespace AnalyzeDomains.Infrastructure.Services
                                 }
                                 catch (Exception dbEx)
                                 {
-                                    // Log database error but continue with event publishing
-                                    // This could happen if site/users already exist in database
+                                   
                                     Console.WriteLine($"Database insertion failed for domain {fullDomain}: {dbEx.Message}");
+                                }
+                                try 
+                                {
+                                    await  dataBaseService.InsertSitePluginsAsync(siteId, pluginData,ct);
+                                }
+                                catch (Exception ex)
+                                {
+                                   
+                                }
+                                try
+                                {
+                                    await dataBaseService.InsertSiteThemesAsync(siteId, new List<Theme>() { themData} , ct);
+                                }
+                                catch (Exception ex)
+                                {
+
+                                }
+                                try
+                                {
+                                    await dataBaseService.InsertSiteDumpInfoAsync(siteId, dbData, ct);
+                                }
+                                catch (Exception ex)
+                                {
+
+                                }
+                                try
+                                {
+                                    await dataBaseService.InsertSiteFilesInfoAsync(siteId,securityData,ct);
+                                }
+                                catch (Exception ex)
+                                {
+
                                 }
 
                                 // Publish events regardless of database operation success
