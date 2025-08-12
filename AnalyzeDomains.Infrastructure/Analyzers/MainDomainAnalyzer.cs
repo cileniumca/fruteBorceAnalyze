@@ -14,14 +14,13 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
             _socksService = socksService;
             _logger = logger;
         }
-
         public async Task<string> MainPageAnalyzeAsync(string url, CancellationToken cancellationToken = default)
         {
             _logger.LogInformation("Starting main page analysis for URL: {Url}", url);
             try
             {
-                // Use balanced SOCKS connection for better load distribution
-                var client = await _socksService.GetHttpWithBalancedSocksConnection();
+                // Use balanced SOCKS connection for better load distribution and get proxy info
+                var (client, proxyUsed) = await _socksService.GetHttpWithBalancedSocksConnectionAndProxyInfo();
 
                 foreach (var scheme in new[] { "https", "http" })
                 {
@@ -40,8 +39,18 @@ namespace AnalyzeDomains.Infrastructure.Analyzers
                     {
                         if (ex.Message.ToLower().Contains("proxy"))
                         {
-                            _logger.LogError("PROXY ERROR!!!!");
-                            Thread.Sleep(TimeSpan.FromHours(20));
+                            _logger.LogError("PROXY ERROR for {Url}: {Error}", fullUrl, ex.Message);
+
+                            // Deactivate the current proxy if we have proxy info
+                            if (proxyUsed != null)
+                            {
+                                _logger.LogWarning("Deactivating proxy {Host}:{Port} due to proxy error", proxyUsed.Host, proxyUsed.Port);
+                                await _socksService.DeactivateProxyAsync(proxyUsed);
+                            }
+
+                            // Don't sleep for 20 hours, instead break and try to get a new connection
+                            _logger.LogInformation("Breaking retry loop due to proxy error");
+                            break;
                         }
                         continue;
                     }

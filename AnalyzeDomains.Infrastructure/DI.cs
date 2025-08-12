@@ -24,11 +24,9 @@ namespace AnalyzeDomains.Infrastructure
             services.AddScoped<IDbExportDetector, DbExportDetector>();
 
             services.AddSingleton<IRabbitMQService, RabbitMQService>();            // Configure MinIO settings
-            services.Configure<MinioSettings>(configuration.GetSection("MinioSettings"));
-
-            // Register MinIO-based SOCKS configuration service
+            services.Configure<MinioSettings>(configuration.GetSection("MinioSettings"));            // Register MinIO-based SOCKS configuration service
             services.AddSingleton<IMinIOSocksConfigurationService, MinIOSocksConfigurationService>();
-            services.AddScoped<ISocksService, SocksService>();
+            services.AddSingleton<ISocksService, SocksService>();
 
             // Add memory cache for performance optimization
             services.AddMemoryCache(options =>

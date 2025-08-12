@@ -16,6 +16,7 @@ namespace AnalyzeDomains.Infrastructure.Services
         private readonly SemaphoreSlim _semaphore = new(64, 64);
         private readonly Timer _configurationCheckTimer;
         private readonly Timer _healthCheckTimer;
+        private readonly ConcurrentDictionary<string, DateTime> _deactivatedProxies = new();
 
         private SocksProxyConfiguration _currentConfiguration = new();
         private DateTime _lastConfigurationLoad = DateTime.MinValue;
@@ -51,7 +52,7 @@ namespace AnalyzeDomains.Infrastructure.Services
             // Set up periodic health check (every 5 minutes)
             _healthCheckTimer = new Timer(PerformHealthChecks, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
 
-            _logger.LogInformation("SocksService initialized with MinIO configuration support");
+            _logger.LogInformation("SocksService initialized as singleton with MinIO configuration support. Deactivated proxy state will persist across requests.");
         }
         public Task<HttpClient> GetHttpWithSocksConnection()
         {
@@ -94,8 +95,41 @@ namespace AnalyzeDomains.Infrastructure.Services
             var clientKey = $"{selectedProxy.Host}:{selectedProxy.Port}:{selectedProxy.UserName}";
 
             return _httpClientPool.GetOrAdd(clientKey, _ => CreateHttpClientWithProxy(selectedProxy));
-        }
+        }        public async Task<(HttpClient Client, SocksSettings? ProxyUsed)> GetHttpWithBalancedSocksConnectionAndProxyInfo()
+        {
+            var healthyProxies = await GetHealthyProxiesAsync();
+            var proxiesList = healthyProxies.ToList();
 
+            _logger.LogDebug("Requesting proxy connection. Healthy proxies: {HealthyCount}, Deactivated proxies: {DeactivatedCount}", 
+                proxiesList.Count, _deactivatedProxies.Count);
+
+            if (!proxiesList.Any())
+            {
+                _logger.LogWarning("No healthy proxies available, falling back to configuration-based proxy");
+                var fallbackClient = await GetHttpWithSocksConnection();
+                // Return null for proxy info since we're using fallback
+                return (fallbackClient, null);
+            }
+
+            // Round-robin selection
+            SocksSettings selectedProxy;
+            lock (_indexLock)
+            {
+                selectedProxy = proxiesList[_currentProxyIndex % proxiesList.Count];
+                _currentProxyIndex = (_currentProxyIndex + 1) % proxiesList.Count;
+            }
+
+            // Increment request count for the selected proxy
+            lock (_indexLock)
+            {
+                selectedProxy.RequestCount++;
+            }
+
+            var clientKey = $"{selectedProxy.Host}:{selectedProxy.Port}:{selectedProxy.UserName}";
+            var client = _httpClientPool.GetOrAdd(clientKey, _ => CreateHttpClientWithProxy(selectedProxy));
+
+            return (client, selectedProxy);
+        }
         public async Task ReloadConfigurationAsync()
         {
             await _semaphore.WaitAsync();
@@ -109,6 +143,9 @@ namespace AnalyzeDomains.Infrastructure.Services
                     var oldConfiguration = _currentConfiguration;
                     _currentConfiguration = newConfiguration;
                     _lastConfigurationLoad = DateTime.UtcNow;
+
+                    // Apply deactivated proxy state to maintain deactivated proxies across reloads
+                    ApplyDeactivatedProxyState(_currentConfiguration);
 
                     _logger.LogInformation("Configuration reloaded successfully. Proxy count changed from {OldCount} to {NewCount}",
                         oldConfiguration.Proxies.Count, newConfiguration.Proxies.Count);
@@ -165,6 +202,123 @@ namespace AnalyzeDomains.Infrastructure.Services
                 _semaphore.Release();
             }
         }
+        public async Task DeactivateProxyAsync(SocksSettings proxy)
+        {
+            if (proxy == null) return;
+
+            await _semaphore.WaitAsync();
+            try
+            {
+                var existingProxy = _currentConfiguration.Proxies
+                    .FirstOrDefault(p => p.Host == proxy.Host && p.Port == proxy.Port && p.UserName == proxy.UserName);
+
+                if (existingProxy != null)
+                {
+                    existingProxy.IsHealthy = false;
+                    existingProxy.FailureCount = _currentConfiguration.MaxFailuresBeforeDisable;
+                    existingProxy.LastHealthCheck = DateTime.UtcNow;                    // Track this proxy as permanently deactivated
+                    var proxyKey = $"{proxy.Host}:{proxy.Port}:{proxy.UserName}";
+                    _deactivatedProxies.TryAdd(proxyKey, DateTime.UtcNow);
+
+                    _logger.LogWarning("Deactivated proxy {Host}:{Port} due to error. Total deactivated proxies: {DeactivatedCount}", 
+                        proxy.Host, proxy.Port, _deactivatedProxies.Count);
+
+                    // Remove the HTTP client from the pool to prevent reuse
+                    var clientKey = $"{proxy.Host}:{proxy.Port}:{proxy.UserName}";
+                    if (_httpClientPool.TryRemove(clientKey, out var client))
+                    {
+                        client?.Dispose();
+                        _logger.LogDebug("Disposed HTTP client for deactivated proxy {Host}:{Port}", proxy.Host, proxy.Port);
+                    }
+                }
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        public async Task DeactivateProxyAsync(string host, int port, string userName)
+        {
+            await _semaphore.WaitAsync();
+            try
+            {
+                var proxy = _currentConfiguration.Proxies
+                    .FirstOrDefault(p => p.Host == host && p.Port == port && p.UserName == userName);
+
+                if (proxy != null)
+                {
+                    await DeactivateProxyAsync(proxy);
+                }
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        public async Task<(int Healthy, int Deactivated, int Total)> GetProxyStatisticsAsync()
+        {
+            await _semaphore.WaitAsync();
+            try
+            {
+                var totalProxies = _currentConfiguration.Proxies.Count;
+                var healthyProxies = _currentConfiguration.Proxies.Count(p => p.IsHealthy);
+                var deactivatedProxiesCount = _deactivatedProxies.Count;
+
+                return (healthyProxies, deactivatedProxiesCount, totalProxies);
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+        private void ApplyDeactivatedProxyState(SocksProxyConfiguration configuration)
+        {
+            var deactivatedCount = 0;
+            foreach (var proxy in configuration.Proxies)
+            {
+                var proxyKey = $"{proxy.Host}:{proxy.Port}:{proxy.UserName}";
+                if (_deactivatedProxies.ContainsKey(proxyKey))
+                {
+                    proxy.IsHealthy = false;
+                    proxy.FailureCount = configuration.MaxFailuresBeforeDisable;
+                    proxy.LastHealthCheck = DateTime.UtcNow;
+                    deactivatedCount++;
+
+                    _logger.LogDebug("Applied deactivated state to proxy {Host}:{Port} during configuration load", proxy.Host, proxy.Port);
+                }
+            }
+            
+            if (deactivatedCount > 0)
+            {
+                _logger.LogInformation("Applied deactivated state to {DeactivatedCount} proxies during configuration load. Total tracked deactivated proxies: {TotalDeactivated}", 
+                    deactivatedCount, _deactivatedProxies.Count);
+            }
+        }
+
+        private void CleanupOldDeactivatedProxies()
+        {
+            // Remove proxies that have been deactivated for more than 24 hours
+            var cutoffTime = DateTime.UtcNow.AddHours(-24);
+            var keysToRemove = _deactivatedProxies
+                .Where(kvp => kvp.Value < cutoffTime)
+                .Select(kvp => kvp.Key)
+                .ToList();
+
+            foreach (var key in keysToRemove)
+            {
+                if (_deactivatedProxies.TryRemove(key, out _))
+                {
+                    _logger.LogDebug("Removed old deactivated proxy entry: {Key}", key);
+                }
+            }
+
+            if (keysToRemove.Any())
+            {
+                _logger.LogInformation("Cleaned up {Count} old deactivated proxy entries", keysToRemove.Count);
+            }
+        }
 
         private async Task LoadInitialConfigurationAsync()
         {
@@ -178,6 +332,9 @@ namespace AnalyzeDomains.Infrastructure.Services
                 {
                     _currentConfiguration = configuration;
                     _lastConfigurationLoad = DateTime.UtcNow;
+
+                    // Apply deactivated proxy state from previously deactivated proxies
+                    ApplyDeactivatedProxyState(_currentConfiguration);
                 }
                 finally
                 {
@@ -237,13 +394,14 @@ namespace AnalyzeDomains.Infrastructure.Services
                     {
                         proxy.LastHealthCheck = DateTime.UtcNow;
                     }
-                });
-
-                await Task.WhenAll(healthCheckTasks);
+                }); await Task.WhenAll(healthCheckTasks);
 
                 var healthyCount = proxiesToCheck.Count(p => p.IsHealthy);
                 _logger.LogDebug("Health check completed. {HealthyCount}/{TotalCount} proxies are healthy",
                     healthyCount, proxiesToCheck.Count);
+
+                // Cleanup old deactivated proxy entries during health checks
+                CleanupOldDeactivatedProxies();
             }
             catch (Exception ex)
             {
