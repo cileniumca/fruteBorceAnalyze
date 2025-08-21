@@ -16,14 +16,15 @@ namespace AnalyzeDomains.Infrastructure
             services.AddScoped<ILoginPageDetector, LoginPageDetector>();
             services.AddScoped<IMainDomainAnalyzer, MainDomainAnalyzer>();
             services.AddScoped<IVersionAnalyzer, VersionAnalyzer>();
-            services.AddScoped<IUserDetector, UserDetector>();
-
-            services.AddScoped<ISecurityAnalyzer, SecurityAnalyzer>();
+            services.AddScoped<IUserDetector, UserDetector>();            services.AddScoped<ISecurityAnalyzer, SecurityAnalyzer>();
             services.AddScoped<IPluginDetector, PluginDetector>();
             services.AddScoped<IThemeDetector, ThemeDetector>();
-            services.AddScoped<IDbExportDetector, DbExportDetector>();
+            services.AddScoped<IDbExportDetector, DbExportDetector>();            // WordPress Plugin Vulnerability Analyzers
+            services.AddScoped<IWordPressPluginVulnerabilityAnalyzer, WordPressPluginVulnerabilityAnalyzer>();
+            services.AddScoped<AdvancedWordPressExploitAnalyzer>();
+            services.AddScoped<WordPressVulnerabilityResearchService>();
 
-            services.AddSingleton<IRabbitMQService, RabbitMQService>();            // Configure MinIO settings
+            services.AddSingleton<IRabbitMQService, RabbitMQService>();// Configure MinIO settings
             services.Configure<MinioSettings>(configuration.GetSection("MinioSettings"));            // Register MinIO-based SOCKS configuration service
             services.AddSingleton<IMinIOSocksConfigurationService, MinIOSocksConfigurationService>();
             services.AddSingleton<ISocksService, SocksService>();

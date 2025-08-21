@@ -373,6 +373,96 @@ namespace AnalyzeDomains.Infrastructure.Services
                 _logger.LogError(ex, "Error inserting site themes for site ID {SiteId}", siteId);
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
                 throw;
+            }        }
+
+        public async Task InsertSiteVulnerabilitiesAsync(int siteId, List<PluginVulnerability> vulnerabilities, CancellationToken cancellationToken = default)
+        {
+            if (!vulnerabilities.Any()) return;
+
+            await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                const string insertCommand = @"
+                    INSERT INTO public.site_plugin_vulnerabilities(
+                        site_id, plugin_name, vulnerability_type, description, target_url, 
+                        severity, confidence, detection_method, exploit_successful, 
+                        exploit_details, metadata, discovered_at)
+                    VALUES (@site_id, @plugin_name, @vulnerability_type, @description, @target_url, 
+                            @severity, @confidence, @detection_method, @exploit_successful, 
+                            @exploit_details, @metadata, @discovered_at);";
+
+                foreach (var vulnerability in vulnerabilities)
+                {
+                    await using var command = new NpgsqlCommand(insertCommand, connection, transaction);
+                    command.Parameters.AddRange(new[]
+                    {
+                        new NpgsqlParameter("@site_id", siteId),
+                        new NpgsqlParameter("@plugin_name", vulnerability.PluginName),
+                        new NpgsqlParameter("@vulnerability_type", vulnerability.VulnerabilityType),
+                        new NpgsqlParameter("@description", vulnerability.Description),
+                        new NpgsqlParameter("@target_url", vulnerability.TargetUrl),
+                        new NpgsqlParameter("@severity", vulnerability.Severity.ToString()),
+                        new NpgsqlParameter("@confidence", vulnerability.Confidence.ToString()),
+                        new NpgsqlParameter("@exploit_successful", vulnerability.ExploitSuccessful),
+                        new NpgsqlParameter("@exploit_details", vulnerability.ExploitDetails ?? (object)DBNull.Value),
+                        new NpgsqlParameter("@metadata", JsonConvert.SerializeObject(vulnerability.Metadata)),
+                        new NpgsqlParameter("@discovered_at", vulnerability.DiscoveredAt)
+                    });
+                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error inserting site vulnerabilities for site ID {SiteId}", siteId);
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                throw;
+            }
+        }
+
+        public async Task InsertVulnerabilityExploitResultsAsync(int siteId, List<VulnerabilityExploitResult> exploitResults, CancellationToken cancellationToken = default)
+        {
+            if (!exploitResults.Any()) return;
+
+            await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                const string insertCommand = @"
+                    INSERT INTO public.site_vulnerability_exploit_results(
+                        site_id, target_url, vulnerability_type, success, details, 
+                        method, response_data, executed_at)
+                    VALUES (@site_id, @target_url, @vulnerability_type, @success, @details, 
+                            @method, @response_data, @executed_at);";
+
+                foreach (var result in exploitResults)
+                {
+                    await using var command = new NpgsqlCommand(insertCommand, connection, transaction);
+                    command.Parameters.AddRange(new[]
+                    {
+                        new NpgsqlParameter("@site_id", siteId),
+                        new NpgsqlParameter("@target_url", result.TargetUrl),
+                        new NpgsqlParameter("@vulnerability_type", result.VulnerabilityType),
+                        new NpgsqlParameter("@success", result.Success),
+                        new NpgsqlParameter("@details", result.Details),
+                        new NpgsqlParameter("@method", result.Method),
+                        new NpgsqlParameter("@response_data", JsonConvert.SerializeObject(result.ResponseData)),
+                        new NpgsqlParameter("@executed_at", result.ExecutedAt)
+                    });
+                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error inserting vulnerability exploit results for site ID {SiteId}", siteId);
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                throw;
             }
         }
 

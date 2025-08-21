@@ -42,7 +42,7 @@ public class RabbitMQService : IRabbitMQService, IDisposable
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _batchCompletedQueueName = _configuration.GetValue<string>("RabbitMQ:BatchCompletedQueueName") ?? "xmlRPCQueue";
         _completedEventsQueueName = _configuration.GetValue<string>("RabbitMQ:CompletedEventsQueueName") ?? "xmlRPCQueue";
-        _analyzeEvent = "analyzeQueue";
+        _analyzeEvent = "analyzeQueuePlugin";
         _connectionFactory = CreateConnectionFactory();
         _logger.LogInformation("RabbitMQ service initialized");
     }

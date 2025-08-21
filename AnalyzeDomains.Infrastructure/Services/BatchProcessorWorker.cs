@@ -4,24 +4,31 @@ using AnalyzeDomains.Domain.Interfaces.Services;
 using AnalyzeDomains.Domain.Models;
 using AnalyzeDomains.Domain.Models.AnalyzeModels;
 using AnalyzeDomains.Domain.Models.Events;
+using AnalyzeDomains.Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 
 namespace AnalyzeDomains.Infrastructure.Services
-{
-    public class BatchProcessorWorker : BackgroundService
+{    public class BatchProcessorWorker : BackgroundService
     {
         private readonly IServiceScopeFactory _serviceScopeFactory;
         private readonly IRabbitMQService _rabbitMQService;
         private readonly IConfiguration _configuration;
+        private readonly ILogger<BatchProcessorWorker> _logger;
 
-        public BatchProcessorWorker(IConfiguration configuration, IServiceScopeFactory serviceScopeFactory, IRabbitMQService rabbitMQService)
+        public BatchProcessorWorker(
+            IConfiguration configuration, 
+            IServiceScopeFactory serviceScopeFactory, 
+            IRabbitMQService rabbitMQService,
+            ILogger<BatchProcessorWorker> logger)
         {
             _configuration = configuration;
             _serviceScopeFactory = serviceScopeFactory;
             _rabbitMQService = rabbitMQService;
+            _logger = logger;
         }
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
@@ -45,12 +52,12 @@ namespace AnalyzeDomains.Infrastructure.Services
                     var loginPageDetector = scope.ServiceProvider.GetRequiredService<ILoginPageDetector>();
                     var versionAnalyzer = scope.ServiceProvider.GetRequiredService<IVersionAnalyzer>();
                     var userDetector = scope.ServiceProvider.GetRequiredService<IUserDetector>();
-                    var mainDomainAnalyzer = scope.ServiceProvider.GetRequiredService<IMainDomainAnalyzer>();
-
-                    var securityAnalyzer = scope.ServiceProvider.GetRequiredService<ISecurityAnalyzer>();
+                    var mainDomainAnalyzer = scope.ServiceProvider.GetRequiredService<IMainDomainAnalyzer>();                    var securityAnalyzer = scope.ServiceProvider.GetRequiredService<ISecurityAnalyzer>();
                     var pluginAnalyzer = scope.ServiceProvider.GetRequiredService<IPluginDetector>();
                     var themAnalyzer = scope.ServiceProvider.GetRequiredService<IThemeDetector>();
                     var dbDumpAnalyzer = scope.ServiceProvider.GetRequiredService<IDbExportDetector>();
+                    var vulnerabilityAnalyzer = scope.ServiceProvider.GetRequiredService<IWordPressPluginVulnerabilityAnalyzer>();
+                    var comprehensiveVulnerabilityService = scope.ServiceProvider.GetRequiredService<WordPressVulnerabilityResearchService>();
                     // Consume events from the queue instead of reading from database
                     var domainsToValidate = await _rabbitMQService.ConsumeAnalyzeEventsAsync(1, stoppingToken);
                     domainsList = domainsToValidate.ToList();
@@ -87,39 +94,69 @@ namespace AnalyzeDomains.Infrastructure.Services
                                 }
                                 var dbData = await dbDumpAnalyzer.DetectDbExportsAsync(fullDomain, ct);
                                 var securityData = await securityAnalyzer.AnalyzeSecurityAsync(fullDomain, ct);
-                                var pluginData = await pluginAnalyzer.DetectPluginsAsync(fullDomain, mode: DetectionMode.Mixed, ct);
-                                var themData = await themAnalyzer.DetectActiveThemeAsync(fullDomain, ct);
+                                var pluginData = await pluginAnalyzer.DetectPluginsAsync(fullDomain, mode: DetectionMode.Mixed, ct);                                var themData = await themAnalyzer.DetectActiveThemeAsync(fullDomain, ct);
+
                                 var siteId = 0;
                                 // Try to add site and users to database, but continue with event publishing regardless
                                 try
                                 {
-                                    siteId =  await dataBaseService.AddSiteWithUsers(
+                                    siteId = await dataBaseService.AddSiteWithUsers(
                                         domain,
                                         loginPage,
                                         versionInfo ?? new WordPressVersion(),
                                         users,
                                         fullDomain,
                                         ct
-                                    );
-                                }
+                                    );                                }
                                 catch (Exception dbEx)
                                 {
-                                   
-                                    Console.WriteLine($"Database insertion failed for domain {fullDomain}: {dbEx.Message}");
+                                    _logger.LogError(dbEx, "Database insertion failed for domain {Domain}: {Message}", fullDomain, dbEx.Message);
                                 }
-                                try 
+
+                                // Perform comprehensive WordPress vulnerability analysis with exploit testing
+                                // This includes both basic vulnerability detection and educational exploit testing
+                                VulnerabilityAnalysisResult? comprehensiveVulnResult = null;
+                                try
                                 {
-                                    await  dataBaseService.InsertSitePluginsAsync(siteId, pluginData,ct);
-                                }
-                                catch (Exception ex)
+                                    if (siteId > 0)
+                                    {
+                                        // Use comprehensive analysis that includes exploit testing and database saving
+                                        comprehensiveVulnResult = await comprehensiveVulnerabilityService.PerformComprehensiveAnalysisAsync(
+                                            fullDomain, 
+                                            siteId, 
+                                            "127.0.0.1", // Attacker IP for educational testing
+                                            4444,         // Attacker port for educational testing
+                                            ct                                        );
+                                        
+                                        _logger.LogInformation("Comprehensive vulnerability analysis completed for {Domain}:", fullDomain);
+                                        _logger.LogInformation("  - Found {VulnerabilityCount} total vulnerabilities", comprehensiveVulnResult.TotalVulnerabilityCount);
+                                        _logger.LogInformation("  - Performed {ExploitTestCount} exploit tests", comprehensiveVulnResult.ExploitResults.Count);
+                                        _logger.LogInformation("  - {SuccessfulExploitCount} successful exploits detected", comprehensiveVulnResult.SuccessfulExploitCount);
+                                        _logger.LogInformation("  - Analysis completed in {Duration:mm\\:ss}", comprehensiveVulnResult.Duration);
+                                    }
+                                    else
+                                    {                                        // Fallback to basic vulnerability analysis if we don't have a valid siteId
+                                        var basicVulnData = await vulnerabilityAnalyzer.AnalyzeVulnerabilitiesAsync(fullDomain, ct);
+                                        _logger.LogInformation("Basic vulnerability analysis completed for {Domain}: {VulnerabilityCount} vulnerabilities found", fullDomain, basicVulnData.Count);
+                                    }
+                                }                                catch (Exception vulnEx)
                                 {
-                                   
+                                    _logger.LogError(vulnEx, "Vulnerability analysis failed for {Domain}: {Message}", fullDomain, vulnEx.Message);
+                                    // Continue with other database operations even if vulnerability analysis fails
                                 }
                                 try
                                 {
-                                    await dataBaseService.InsertSiteThemesAsync(siteId, new List<Theme>() { themData} , ct);
+                                    await dataBaseService.InsertSitePluginsAsync(siteId, pluginData, ct);
                                 }
-                                catch (Exception ex)
+                                catch (Exception)
+                                {
+
+                                }
+                                try
+                                {
+                                    await dataBaseService.InsertSiteThemesAsync(siteId, themData != null ? new List<Theme>() { themData } : new List<Theme>(), ct);
+                                }
+                                catch (Exception)
                                 {
 
                                 }
@@ -127,18 +164,18 @@ namespace AnalyzeDomains.Infrastructure.Services
                                 {
                                     await dataBaseService.InsertSiteDumpInfoAsync(siteId, dbData, ct);
                                 }
-                                catch (Exception ex)
+                                catch (Exception)
+                                {
+
+                                }                                try
+                                {
+                                    await dataBaseService.InsertSiteFilesInfoAsync(siteId, securityData, ct);
+                                }
+                                catch (Exception)
                                 {
 
                                 }
-                                try
-                                {
-                                    await dataBaseService.InsertSiteFilesInfoAsync(siteId,securityData,ct);
-                                }
-                                catch (Exception ex)
-                                {
-
-                                }
+                                // Note: Vulnerability data is automatically saved by the comprehensive analysis service
 
                                 // Publish events regardless of database operation success
                                 var mainLoginPageUrl = loginPage.Where(x => x.MainLoginPage == true).Select(xx => xx.Url).FirstOrDefault() ?? string.Empty;
@@ -175,10 +212,9 @@ namespace AnalyzeDomains.Infrastructure.Services
                 }
 
                 // Log batch processing results
-                var batchDuration = DateTime.UtcNow - batchStartTime;
-                if (domainsList.Count > 0)
+                var batchDuration = DateTime.UtcNow - batchStartTime;                if (domainsList.Count > 0)
                 {
-                    Console.WriteLine($"Batch {batchId} completed: {successfulAnalyses} successful, {failedAnalyses} failed. Duration: {batchDuration:mm\\:ss}");
+                    _logger.LogInformation("Batch {BatchId} completed: {SuccessfulAnalyses} successful, {FailedAnalyses} failed. Duration: {Duration:mm\\:ss}", batchId, successfulAnalyses, failedAnalyses, batchDuration);
                 }
 
                 batchId++;
@@ -287,6 +323,7 @@ namespace AnalyzeDomains.Infrastructure.Services
 //using AnalyzeDomains.Domain.Interfaces.Analyzers;
 //using AnalyzeDomains.Domain.Interfaces.Services;
 //using AnalyzeDomains.Domain.Models;
+//using AnalyzeDomains.Domain.Models.Events;
 //using Microsoft.Extensions.Configuration;
 //using Microsoft.Extensions.DependencyInjection;
 //using Microsoft.Extensions.Hosting;
@@ -329,7 +366,7 @@ namespace AnalyzeDomains.Infrastructure.Services
 //                        if (domainsToValidate.Count > 0)
 //                        {
 //                            // Create analyze events in batches of 1000
-//                            const int eventBatchSize = 1000;
+//                            const int eventBatchSize = 10000;
 //                            var analyzeEvents = domainsToValidate.Select(domain => new AnalyzeEvent
 //                            {
 //                                SiteId = domain.SiteId,
